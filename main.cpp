@@ -8,6 +8,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <TFT_eSPI.h>
+#include "deflock_wordmark_146.h"
 #include <TinyGPSPlus.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -291,6 +292,7 @@ typedef struct {
 
 static CydGpsState cydGps = {};
 static CydScreen cydScreen = SCREEN_SCAN;
+static CydScreen cydLastDrawnScreen = SCREEN_COUNT;
 static bool cydDisplayReady = false;
 static bool cydSdReady = false;
 static uint32_t cydCsvRows = 0;
@@ -985,11 +987,20 @@ static void cydDrawUi(bool force = false) {
   if (!force && now - cydLastUiDraw < CYD_UI_REFRESH_MS) return;
   cydLastUiDraw = now;
   char timeBuf[8];
+  bool fullRedraw = force || cydLastDrawnScreen != cydScreen;
 
-  tft.fillRect(0, 0, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H, TFT_BLACK);
+  if (fullRedraw) {
+    tft.fillRect(0, 0, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H, TFT_BLACK);
+    cydLastDrawnScreen = cydScreen;
+  }
   switch (cydScreen) {
     case SCREEN_SCAN:
-      cydDrawHeader("CYD Flock-You");
+      if (fullRedraw) {
+        cydDrawHeader("CYD Flock-You");
+        tft.pushImage(CYD_TFT_USABLE_W - DEFLOCK_LOGO_W - 8, 52,
+                      DEFLOCK_LOGO_W, DEFLOCK_LOGO_H, DEFLOCK_LOGO);
+      }
+      tft.fillRect(8, 42, 130, 34, TFT_BLACK);
       tft.setTextColor((cydLastDetectionMs && now - cydLastDetectionMs < 15000)
                        ? TFT_RED : TFT_GREEN, TFT_BLACK);
       tft.setTextSize(3);
@@ -997,6 +1008,7 @@ static void cydDrawUi(bool force = false) {
                      ? "HIT" : "SCAN", 8, 44);
       tft.setTextSize(2);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.fillRect(8, 84, 130, 104, TFT_BLACK);
       tft.drawString("Ch", 8, 86);
       tft.drawNumber(currentChannel, 56, 86);
       tft.drawString("Hits", 8, 112);
@@ -1010,7 +1022,8 @@ static void cydDrawUi(bool force = false) {
       break;
 
     case SCREEN_GPS:
-      cydDrawHeader("Phone GPS");
+      if (fullRedraw) cydDrawHeader("Phone GPS");
+      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
       tft.setTextSize(2);
       tft.setTextColor(cydGpsFresh() ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
       tft.drawString(cydGpsFresh() ? "Fresh fix" : "No fresh fix", 8, 48);
@@ -1028,7 +1041,8 @@ static void cydDrawUi(bool force = false) {
       break;
 
     case SCREEN_LOG:
-      cydDrawHeader("CSV Log");
+      if (fullRedraw) cydDrawHeader("CSV Log");
+      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
       tft.setTextSize(2);
       tft.setTextColor(cydSdReady ? TFT_GREEN : TFT_RED, TFT_BLACK);
       tft.drawString(cydSdReady ? "SD mounted" : "SD unavailable", 8, 48);
@@ -1041,7 +1055,8 @@ static void cydDrawUi(bool force = false) {
       break;
 
     case SCREEN_LAST:
-      cydDrawHeader("Last Detection");
+      if (fullRedraw) cydDrawHeader("Last Detection");
+      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
       tft.setTextSize(2);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
       tft.drawString(cydLastMac[0] ? cydLastMac : "none yet", 8, 48);

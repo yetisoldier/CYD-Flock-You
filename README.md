@@ -1,200 +1,111 @@
-# Flock-You: Promiscuous WiFi Edition (`promiscious-dev` branch)
+# CYD Flock-You
 
-<img src="flock.png" alt="Flock You" width="300px">
+Cheap Yellow Display firmware and DeFlock Android companion work for passive, human-reviewed Flock Safety / ALPR discovery.
 
-**Passive 2.4 GHz promiscuous-mode detector for Flock Safety surveillance infrastructure. Runs standalone or feeds the Flask dashboard over USB for live GPS-tagged wardriving.**
+This project turns an ESP32 Cheap Yellow Display (ESP32-2432S028R, usually called a CYD) into a field sensor that watches 2.4 GHz Wi-Fi traffic for known Flock-style RF signatures. The Android companion work connects over Bluetooth LE, streams phone GPS to the CYD, receives detections, and opens a review-first DeFlock workflow so a human can place and submit the camera location accurately.
 
-> **Dev note:** This is the `promiscious-dev` branch — adds the
-> DeFlockJoplin wildcard-probe tightening and a 31st OUI on top of the
-> `promiscious` baseline. See "Further research" below.
+## Status
 
----
+This is ready as a public beta, not as a polished consumer product.
 
-## Credit
+Verified so far:
 
-All WiFi promiscuous detection research — the **30-OUI target list**, the **promiscuous-mode strategy**, and the **addr1-receiver detection technique** — is the work of **ØяĐöØцяöЪöяцฐ / @NitekryDPaul**. The firmware here is a mod of his original firmware with added SPIFFS persistence and Flask-dashboard integration. Full research writeup: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
+- CYD firmware builds and flashes with PlatformIO.
+- CYD TFT status screen, button cycling, buzzer, LED, Bluetooth LE UART, SD CSV logging, and phone GPS intake are working on bench hardware.
+- DeFlock Android companion branch connects to the CYD over Bluetooth LE, streams phone GPS, receives simulated CYD detections, creates pending review candidates, and opens the normal DeFlock add-node flow.
+- Android map follow-me camera movement has visual smoothing so driving should be less jerky while raw GPS continues to stream unchanged to the CYD.
 
-Additional research credit to **Michael / DeFlockJoplin** for the **wildcard-probe-request signature** and the 31st OUI (`82:6b:f2`). Field-tested to 11/12 cameras caught with only 2 false positives in Joplin. Source: [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you).
+Still field-test territory:
 
----
+- Real-world RF detection depends on nearby hardware behavior, antenna placement, vehicle speed, channel dwell, and local RF noise.
+- A bench `FYSIM` detection verifies the data path, but it is not evidence of a real Flock hit.
+- The Android companion work currently lives in a DeFlock fork/branch and is not upstream DeFlock.
+- Use this as a research and review-assist tool. Do not blindly upload automated locations.
 
-## What this branch does
+## Forks and Upstream Projects
 
-Turns a Seeed XIAO ESP32-S3 into a passive WiFi receiver that watches 2.4 GHz management and data frames for Flock Safety MAC OUIs. No AP, no transmit — the radio stays dedicated to sniffing while the device hops channels 1 / 6 / 11 at 350 ms dwell.
+This work stands on several existing projects and research efforts:
 
-Every detection is:
+- Firmware fork: [`colonelpanichacks/flock-you`](https://github.com/colonelpanichacks/flock-you)
+- Android app fork: [`FoggedLens/deflock-app`](https://github.com/FoggedLens/deflock-app)
+- Wildcard probe signature and added OUI research: [`DeflockJoplin/flock-you`](https://github.com/DeflockJoplin/flock-you)
+- BLE manufacturer ID work referenced by the upstream ecosystem: [`wgreenberg/flock-you`](https://github.com/wgreenberg/flock-you)
+- DeFlock project and public map workflow: [deflock.me](https://deflock.me)
 
-- beeped (piezo on GPIO3) and flashed (onboard LED on GPIO21)
-- written to on-device SPIFFS in an atomic CRC-envelope format, surviving power loss
-- emitted as one JSON line over USB CDC in the schema `api/flockyou.py` expects, so the Flask dashboard auto-ingests it with GPS temporal matching
+Additional credit belongs to ØяĐöØцяöЪöяцฐ / @NitekryDPaul for the original Wi-Fi OUI research and receiver-side `addr1` technique documented in [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
 
-The device works standalone (no USB host needed) and plugged in (live dashboard) without any mode switch.
+## What Changed In This Fork
 
----
+### CYD Firmware
 
-## Why promiscuous mode, and why `addr1`
+The firmware adds a `cyd` PlatformIO target for ESP32-2432S028R boards.
 
-Most WiFi sniffers only check the transmitter address (`addr2`). Flock infrastructure spends most of its duty cycle **asleep** — it wakes briefly in bursts, uploads, then sleeps again. During the silence it may never transmit a single frame in your capture window.
+Major changes:
 
-But it may still appear on the air as the **destination** (`addr1`) of probe responses or data frames from nearby APs.
+- TFT_eSPI display support with a field status UI.
+- Dark CYD scan screen with DeFlock wordmark, current channel, hit count, GPS state, SD state, Bluetooth state, local time, and latest captured location.
+- Screen cycling with the CYD boot button.
+- SD card CSV logging to `/flock.csv`.
+- Bluetooth LE UART using the Nordic UART UUIDs.
+- Phone GPS input through `FYGPS`.
+- Pairing/status replies through `FYHELLO` and `FYSTATUS`.
+- Indoor simulation command through `FYSIM`.
+- Detection JSON output with GPS metadata when a fresh phone fix is available.
+- Visual/audible hit feedback: screen changes from `SCAN` to `HIT`, buzzer chirps, and LED flashes.
 
-Checking `addr1` in addition to `addr2` picks those silent stations up. It requires two guards to avoid false positives:
+The detector remains passive. It listens to 2.4 GHz Wi-Fi frames and does not transmit Wi-Fi, associate to networks, or upload anything by itself.
 
-- `addr1` is broadcast (`ff:ff:ff:ff:ff:ff`) in beacons and broadcasts — **multicast filter**
-- Modern devices use randomised (locally-administered) MACs that can't be fingerprinted by OUI — **randomised-MAC filter** on byte 0 bit 1
+### Android Companion Work
 
-Both are applied before the OUI match. This whole approach, including the 30-OUI list, is **@NitekryDPaul's research**.
+The DeFlock app fork adds a CYD Bluetooth integration path.
 
----
+Major changes:
 
-## Further research — the wildcard-probe signature (DeFlockJoplin)
+- Bluetooth LE scan/connect to `CYD-Flock-You`.
+- Nordic UART notification parsing for CYD JSON lines.
+- Phone GPS streaming to CYD.
+- CYD candidate queue for received detections.
+- Duplicate suppression against known nearby surveillance nodes using a 250 foot / 76.2 meter radius.
+- Review-first handoff into DeFlock's normal add-node sheet.
+- Required manual adjustment away from the original phone GPS point before submission.
+- Required manual camera direction selection.
+- `FYSIM` button while connected for bench testing.
+- Follow-me map smoothing for driving.
 
-Michael / DeFlockJoplin used the OUI + addr1/addr2/addr3 work above as a starting point and characterised what Flock cameras actually do on the air. His finding:
+The app owns review and upload approval. The CYD is only a sensor.
 
-> The cameras are hopping channels and sending out a wildcard WiFi probe request on every channel. This specific type of request combined with OUI matching has created what seems to be a fairly unique signature.
+## What To Expect
 
-His drive-test in Joplin caught **11 of 12 cameras** with only **2 false positives**. The 12th camera was doing the same wildcard-probe behaviour but with an OUI (`82:6b:f2`) that wasn't in @NitekryDPaul's original 30 — it's now the 31st entry in our list, credited to him.
+When the system is working:
 
-The tightened signature that's active on this branch:
+- The CYD screen shows scan status and Bluetooth/GPS/SD state.
+- The phone connects over Bluetooth and shows a CYD disconnect button.
+- The phone sends GPS updates to the CYD roughly once per second.
+- A CYD detection writes a row to `/flock.csv`, updates the CYD hit count, and sends a JSON event to the phone.
+- The Android app either suppresses the event as a duplicate or creates a pending CYD candidate.
+- Reviewing a candidate opens the normal DeFlock add-camera flow.
 
-1. Frame is 802.11 Management, type=0 subtype=4 (**Probe Request**)
-2. SSID Information Element (tag 0) is present with **length 0** (wildcard)
-3. `addr2` (transmitter) matches the known-OUI list
+Expected limitations:
 
-When all three hit, we emit `detection_method: wifi_wildcard_probe` — the high-precision class. Non-probe frames from the same OUIs still emit `wifi_oui_addr2`, and the `addr1` receiver-side sleeper-catch still runs independently.
-
-His proof-of-concept firmware (different enough we're not just pulling it in wholesale, but the core idea carried over cleanly): [DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you). The wildcard-probe analysis is his; we ported the detection into this firmware and kept our SPIFFS persistence, Flask JSON emission, and audio/LED feedback on top.
-
----
-
-## Detection pipeline
-
-```
-  [2.4GHz air]
-       │
-       ▼
-  wifiSniffer()                 ← IRAM promiscuous callback (WiFi task)
-       │                          fast match only, no Serial / no malloc
-       ▼
-  alertQueue[32]                ← lock-free ring buffer (ISR-safe mux)
-       │
-       ▼
-  drainAlertQueue()             ← loop() context, per-iteration drain
-       │
-       ├─► fyAddDetection()           ← always, every hit
-       │        │
-       │        ▼
-       │   fyDet[200]                 ← unique-by-MAC on-device table
-       │        │
-       │        ▼
-       │   autosaveTick()             ← every 60s when dirty
-       │        │
-       │        ▼
-       │   fySaveSession()            ← atomic CRC-envelope write to SPIFFS
-       │
-       ├─► shouldSuppressDuplicate()  ← 5s per-MAC serial-emit rate limit
-       │
-       └─► emitDetectionJSON()        ← USB CDC line for Flask
-            buzzerBeep() + ledFlash()
-```
-
-The split between callback and loop is deliberate: the WiFi task has hard real-time constraints and cannot call `Serial.print` or `malloc` safely. The callback writes only to the lock-free ring buffer; `loop()` does all the heavy work.
-
----
-
-## OUI target list (@NitekryDPaul research)
-
-All lowercase, colon-separated. 31 Flock Safety infrastructure prefixes:
-
-```
-70:c9:4e   3c:91:80   d8:f3:bc   80:30:49   b8:35:32
-14:5a:fc   74:4c:a1   08:3a:88   9c:2f:9d   c0:35:32
-94:08:53   e4:aa:ea   f4:6a:dd   f8:a2:d6   24:b2:b9
-00:f4:8d   d0:39:57   e8:d0:fc   e0:4f:43   b8:1e:a4
-70:08:94   58:8e:81   ec:1b:bd   3c:71:bf   58:00:e3
-90:35:ea   5c:93:a2   64:6e:69   48:27:ea   a4:cf:12
-82:6b:f2   ← contributed by Michael / DeFlockJoplin
-```
-
-Pre-compiled into a byte table in `setup()` so the matcher stays entirely in IRAM with no flash-resident lookups during callback execution.
-
-Full dataset and methodology: [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
-
----
-
-## SPIFFS wire format
-
-On-flash layout, atomic and crash-safe:
-
-```
-Line 1: {"v":1,"count":N,"bytes":B,"crc":"0xXXXXXXXX"}
-Line 2: [{"mac":"...","method":"...","rssi":...,...},...]
-```
-
-Save procedure:
-
-1. Compute CRC32 + byte count over the serialised payload
-2. Write envelope header + payload to `/session.tmp`
-3. Re-read and re-validate `/session.tmp` (CRC check)
-4. Remove `/session.json`
-5. Atomic rename `/session.tmp` → `/session.json` (copy+delete fallback)
-
-Boot recovery:
-
-1. If `/session.json` validates, promote it to `/prev_session.json`
-2. Otherwise try `/session.tmp` (interrupted save)
-3. Delete both working files, start with an empty live table
-4. `/prev_session.json` stays around for inspection
-
-CRC32 uses the standard `0xEDB88320` polynomial so the same file can be verified on a host with any off-the-shelf CRC tool.
-
----
-
-## Flask dashboard integration
-
-The firmware emits one JSON line per detection in the same schema the BLE detector uses, so `api/flockyou.py` picks it up with zero changes:
-
-```json
-{"event":"detection","detection_method":"wifi_oui_addr2","protocol":"wifi_2_4ghz","mac_address":"aa:bb:cc:dd:ee:ff","oui":"aa:bb:cc","device_name":"","rssi":-62,"channel":6,"frequency":2437,"ssid":""}
-```
-
-`detection_method` values:
-
-- `wifi_wildcard_probe` — **Probe Request + wildcard SSID from a known OUI** (the DeFlockJoplin high-precision signature). When this fires, the `addr2` broad alert is suppressed for the same frame to avoid double-counting.
-- `wifi_oui_addr2` — transmitter-side OUI match on any non-probe frame
-- `wifi_oui_addr1` — **receiver-side OUI match** (the @NitekryDPaul technique)
-- `wifi_oui_addr3` — BSSID OUI match (mgmt frames only; disabled by default)
-- `wifi_ssid` — SSID keyword match (disabled by default)
-
-### GPS wardriving
-
-GPS is handled Flask-side, since the ESP32 radio is dedicated to sniffing and there's no on-device AP. Two options:
-
-- **USB NMEA puck** plugged into the host running Flask — Flask reads NMEA and timestamps a GPS timeline
-- **Flask dashboard open in a phone browser** — browser Geolocation API posts updates to Flask
-
-Flask does a temporal match between detection timestamp and GPS timeline, then exports JSON / CSV / KML for Google Earth.
-
-### Running Flask
-
-```bash
-cd api
-pip install -r requirements.txt
-python flockyou.py
-```
-
-Open `http://localhost:5000`, pick your serial port from the UI, detections start showing up live.
-
----
+- The CYD needs separate power in the current field setup. USB OTG from the test phone was unreliable.
+- BLE and Wi-Fi share the ESP32 2.4 GHz radio, so this favors a simple Wi-Fi sniffing plus BLE UART design rather than adding more concurrent radio work.
+- GPS accuracy comes from the phone. The candidate starts at the vehicle location; the user must move it to the actual roadside camera.
+- Direction is not inferred from travel direction. The user sets it manually.
+- Detection can miss cameras. RF behavior is bursty, local, and hardware-dependent.
 
 ## Hardware
 
-**Primary board:** Cheap Yellow Display / ESP32-2432S028R
+Primary target:
 
-CYD support adds a TFT status UI, SD-card CSV logging, and a Bluetooth LE UART pairing protocol for the DeFlock Android fork. The phone supplies GPS over BLE; the CYD stays focused on passive WiFi detection. USB serial remains useful for flashing, bench monitoring, and protocol debugging.
+- Cheap Yellow Display / ESP32-2432S028R
+- ESP32 with ILI9341 TFT
+- microSD card recommended
+- Separate USB power bank or other stable power source
+
+CYD pin assumptions:
 
 | Pin | Function |
-|-----|----------|
+| --- | --- |
 | GPIO 4 | Red RGB LED detection feedback, active low |
 | GPIO 5 | SD card CS |
 | GPIO 12 | TFT MISO |
@@ -206,26 +117,15 @@ CYD support adds a TFT status UI, SD-card CSV logging, and a Bluetooth LE UART p
 | GPIO 26 | Piezo buzzer |
 | GPIO 0 | Screen cycle button |
 
-**Legacy board:** Seeed Studio XIAO ESP32-S3
+The older Seeed XIAO ESP32-S3 target from upstream remains in the tree, but the public beta work here is centered on the CYD target.
 
-| Pin | Function |
-|-----|----------|
-| GPIO 3 | Piezo buzzer |
-| GPIO 21 | Onboard user LED (active low) |
-| GPIO 43 | Serial1 TX mirror (115200 baud) |
+## Build And Flash The CYD
 
-Boot sound: first 6 notes of Super Mario Bros. World 1-2 (underground).
-
----
-
-## Build and flash
-
-Requires [PlatformIO](https://platformio.org/).
+Install PlatformIO, then run:
 
 ```bash
-pio run -e cyd              # build CYD firmware
-pio run -e cyd -t upload    # flash CYD firmware
-pio device monitor          # serial output
+pio run -e cyd
+pio run -e cyd -t upload
 ```
 
 Shortcut:
@@ -234,110 +134,177 @@ Shortcut:
 ./scripts/flash-cyd.sh
 ```
 
-The XIAO target is still available:
+Serial monitor:
 
 ```bash
-pio run -e xiao_esp32s3
+pio device monitor -e cyd
 ```
 
-`platformio.ini`, `partitions.csv`, and `partitions_cyd.csv` are at the root. The CYD build uses TFT_eSPI and TinyGPSPlus in addition to the Arduino-ESP32 core.
+Useful serial commands:
 
----
+```text
+FYHELLO
+FYSTATUS
+FYSIM
+FYSCREEN,next
+```
 
-## DeFlock Android pairing
+`FYHELLO` and `FYSTATUS` return a JSON `pair_status` line.
 
-Power the CYD separately, then use DeFlock's Bluetooth button to connect to the `CYD-Flock-You` BLE peripheral. The firmware exposes the Nordic UART service:
+## Android Companion App
 
-- Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
-- RX/write: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
-- TX/notify: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
+The Android integration lives in Eric's DeFlock app fork:
 
-CYD emits a pairing status JSON line every 5 seconds and responds to `FYHELLO`. A paired DeFlock fork should stream phone GPS with `FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>` and listen for `event:"detection"` JSON.
+- Fork: [`yetisoldier/deflock-app`](https://github.com/yetisoldier/deflock-app)
+- Branch: [`cyd-flock-you-integration`](https://github.com/yetisoldier/deflock-app/tree/cyd-flock-you-integration)
+- Upstream: [`FoggedLens/deflock-app`](https://github.com/FoggedLens/deflock-app)
 
-The intended app flow is review-first:
+```text
+git clone https://github.com/yetisoldier/deflock-app.git
+cd deflock-app
+git checkout cyd-flock-you-integration
+```
 
-- queue a candidate when CYD detects a target and no surveillance node exists within 250 feet / 76.2 meters
-- place the first marker at the phone GPS coordinate
-- require the user to drag the marker to the roadside camera position
-- require the user to set camera direction manually
-- only then queue the normal DeFlock upload for user approval
+Build locally:
 
-Full protocol notes are in [`docs/deflock-pairing-protocol.md`](docs/deflock-pairing-protocol.md).
+```bash
+flutter pub get
+flutter analyze
+flutter test
+flutter build apk --debug
+```
 
-The companion DeFlock fork lives locally at `/home/yetisoldier/projects/deflock-cyd-app` on branch `cyd-flock-you-integration`. It connects over BLE UART, parses CYD events, queues review candidates, applies the 250-foot duplicate suppression rule, and opens DeFlock's normal map-based add flow for manual roadside placement and camera direction.
+Install to a connected Android device:
 
----
+```bash
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+```
 
-## Config cheatsheet (top of `main.cpp`)
+The Android device needs Bluetooth and precise location permission. For driving tests, enable follow-me mode in the app and keep the CYD powered separately.
 
-| Define | Default | Notes |
-|---|---|---|
-| `CHANNEL_MODE` | `CHANNEL_MODE_CUSTOM` | `CUSTOM` (1/6/11), `FULL_HOP` (1-11), or `SINGLE` |
-| `CHANNEL_DWELL_MS` | 350 | Time on each channel before hop |
-| `RSSI_MIN` | -95 | Drop frames weaker than this |
-| `ALERT_COOLDOWN_MS` | 5000 | Per-MAC serial-emit rate limit |
-| `CHECK_ADDR1` | 1 | The @NitekryDPaul receiver-side technique |
-| `CHECK_ADDR3` | 0 | BSSID fallback (mgmt frames only) |
-| `ENABLE_SSID_MATCH` | 0 | Substring match against `target_ssid_keywords[]` |
-| `PROCESS_MGMT_FRAMES` | 1 | Beacons, probe req/resp, etc. |
-| `PROCESS_DATA_FRAMES` | 1 | Data frames (where addr1 catch shines) |
-| `MAX_DETECTIONS` | 200 | On-device table cap |
-| `AUTOSAVE_INTERVAL_MS` | 60000 | SPIFFS save cadence |
-| `LED_PIN` | 21 | Onboard user LED |
-| `BUZZER_PIN` | 3 | Piezo |
+## Field Use
 
----
+1. Flash the CYD firmware.
+2. Insert a microSD card if you want local CSV logging.
+3. Power the CYD from a stable source.
+4. Open the DeFlock Android companion build.
+5. Tap the CYD Bluetooth button and connect to `CYD-Flock-You`.
+6. Confirm the app shows a connected/disconnect state.
+7. Drive normally with the phone providing GPS.
+8. If the app shows a pending CYD candidate, review it.
+9. Move the marker from the road/vehicle position to the actual camera location.
+10. Set camera direction manually.
+11. Submit through the normal DeFlock/OpenStreetMap review path only when you are confident.
 
-## Standalone vs connected
+Bench test without a real RF hit:
 
-**Without USB:** device boots, plays the SMB 1-2 intro, starts scanning, stores every unique detection to SPIFFS, flashes the onboard LED on each hit. Plug in later — the prior session is sitting in `/prev_session.json`.
+1. Connect the app to the CYD.
+2. Tap the simulate button or send `FYSIM`.
+3. Confirm a pending candidate appears.
+4. Cancel the candidate after verifying the flow so it is not confused with a real observation.
 
-**With USB + Flask running:** same thing, plus every detection streams live to the dashboard as a JSON line. Flask adds GPS (if configured) and deduplicates across MAC, building the wardriving map as you move.
+## Bluetooth Protocol
 
-Both modes work simultaneously — the SPIFFS write path doesn't care if a host is listening.
+The field integration uses Bluetooth LE UART because the test phone did not reliably power/enumerate the CYD over USB OTG.
 
----
+- Peripheral name: `CYD-Flock-You`
+- Service UUID: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
+- RX/write UUID: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
+- TX/notify UUID: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
+- Line format: newline-delimited text
 
-## BLE companion firmware
+Pairing:
 
-The BLE-only sibling of this firmware lives on the [`main` branch](https://github.com/colonelpanichacks/flock-you/tree/main). It detects Flock and Raven gear via BLE advertisements (OUI prefix, device name, manufacturer ID `0x09C8`, Raven service UUIDs), runs its own WiFi AP with a phone-facing dashboard at `192.168.4.1`, and emits the same Flask JSON schema. Flash both on separate boards for overlapping BLE + WiFi coverage feeding one Flask dashboard.
+```text
+FYHELLO
+```
 
----
+Typical status response:
 
-## Acknowledgments
+```json
+{"event":"pair_status","device":"CYD-Flock-You","protocol_version":1,"features":["wifi_promisc","phone_gps","sd_csv","tft_status","ble_uart"],"gps":true,"sd":true,"detections":0,"csv_rows":0}
+```
 
-- **ØяĐöØцяöЪöяцฐ (@NitekryDPaul)** — **WiFi promiscuous detection research**: the 30-OUI Flock Safety target list and the addr1-receiver detection technique that are the baseline of this firmware. The code here is a mod of his original work.
-- **Michael / DeFlockJoplin** ([DeflockJoplin/flock-you](https://github.com/DeflockJoplin/flock-you), [deflockjoplin.today](https://deflockjoplin.today)) — **wildcard-probe-request signature** + the 31st OUI (`82:6b:f2`). Drive-tested in Joplin to 11/12 cameras caught with only 2 false positives.
-- **Will Greenberg** ([@wgreenberg](https://github.com/wgreenberg)) — BLE manufacturer company ID detection (`0x09C8` XUNTONG) sourced from his [flock-you](https://github.com/wgreenberg/flock-you) fork (used by the BLE companion on `main`)
-- **[DeFlock](https://deflock.me)** ([FoggedLens/deflock](https://github.com/FoggedLens/deflock)) — crowdsourced ALPR location data and detection methodologies. Datasets included in `datasets/`
-- **[GainSec](https://github.com/GainSec)** — Raven BLE service UUID dataset (`raven_configurations.json`) used by the BLE companion
+Phone GPS input:
 
----
+```text
+FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>,<unix_time>,<utc_offset_min>
+```
 
-## OUI-SPY Firmware Ecosystem
+The shorter format without time fields is still accepted:
 
-Flock-You is part of the OUI-SPY firmware family:
+```text
+FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>
+```
 
-| Firmware | Description | Board |
-|----------|-------------|-------|
-| **[OUI-SPY Unified](https://github.com/colonelpanichacks/oui-spy-unified-blue)** | Multi-mode BLE + WiFi detector | ESP32-S3 / ESP32-C5 |
-| **[OUI-SPY Detector](https://github.com/colonelpanichacks/ouispy-detector)** | Targeted BLE scanner with OUI filtering | ESP32-S3 |
-| **[OUI-SPY Foxhunter](https://github.com/colonelpanichacks/ouispy-foxhunter)** | RSSI-based proximity tracker | ESP32-S3 |
-| **[Flock You](https://github.com/colonelpanichacks/flock-you)** | Flock Safety / Raven surveillance detection (this project) | ESP32-S3 |
-| **[Sky-Spy](https://github.com/colonelpanichacks/Sky-Spy)** | Drone Remote ID detection | ESP32-S3 / ESP32-C5 |
-| **[Remote-ID-Spoofer](https://github.com/colonelpanichacks/Remote-ID-Spoofer)** | WiFi Remote ID spoofer & simulator with swarm mode | ESP32-S3 |
-| **[OUI-SPY UniPwn](https://github.com/colonelpanichacks/Oui-Spy-UniPwn)** | Unitree robot exploitation system | ESP32-S3 |
+Detection output:
 
----
+```json
+{"event":"detection","detection_method":"wifi_wildcard_probe","protocol":"wifi_2_4ghz","mac_address":"70:c9:4e:aa:bb:cc","oui":"70:c9:4e","device_name":"","rssi":-63,"channel":6,"frequency":2437,"ssid":"","gps":{"latitude":45.171234,"longitude":-93.225678,"accuracy":6.5,"age_ms":250,"source":"phone"}}
+```
 
-## Author
+More detail is in [`docs/deflock-pairing-protocol.md`](docs/deflock-pairing-protocol.md).
 
-**colonelpanichacks**
+## CSV Log
 
-**Oui-Spy devices available at [colonelpanic.tech](https://colonelpanic.tech)**
+When SD is available, detections append to:
 
----
+```text
+/flock.csv
+```
+
+Columns:
+
+```text
+millis,mac,oui,method,rssi,channel,frequency_mhz,lat,lon,accuracy_m,gps_age_ms,speed_kmph,course_deg,count
+```
+
+## Detection Logic
+
+The firmware keeps the upstream promiscuous-mode split:
+
+```text
+Wi-Fi callback -> lock-free alert queue -> loop drain -> detection table -> JSON/BLE/CSV/UI
+```
+
+The Wi-Fi callback stays lightweight. It does fast matching only and avoids serial printing, file I/O, and heap allocation.
+
+Detection methods include:
+
+- `wifi_wildcard_probe`: probe request with wildcard SSID from a known OUI.
+- `wifi_oui_addr2`: transmitter address OUI match.
+- `wifi_oui_addr1`: receiver-side OUI match, useful for quiet/sleeping infrastructure.
+- `wifi_oui_addr3`: BSSID OUI match, disabled by default.
+- `wifi_ssid`: SSID keyword match, disabled by default.
+
+The target OUI list and research credit are documented in [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
+
+## OpenStreetMap And Data Quality
+
+This project is intentionally review-first.
+
+The CYD does not submit to OpenStreetMap. The Android app should only create a candidate. The user is responsible for confirming:
+
+- A camera is actually present.
+- The location is moved from the vehicle path to the physical camera.
+- The direction is set correctly.
+- Existing nodes are not duplicated.
+- Tags are appropriate for the device.
+
+This keeps the workflow useful without turning RF observations into blind automated map edits.
+
+## Release Checklist
+
+Before tagging a public release:
+
+- Build CYD firmware with `pio run -e cyd`.
+- Flash and verify `FYHELLO` returns `sd:true` if an SD card is present.
+- Build Android companion with `flutter analyze`, `flutter test`, and `flutter build apk --debug`.
+- Pair app and CYD over BLE.
+- Verify phone GPS makes CYD status report `gps:true`.
+- Run one `FYSIM` candidate and cancel it afterward.
+- Run at least one real drive test and compare CYD CSV, app candidate state, and known camera locations.
 
 ## Disclaimer
 
-Passive reception of publicly-broadcast 802.11 frames for security research, privacy auditing, and education. The device does not transmit and does not authenticate to any network. Detecting the presence of surveillance hardware in public spaces is legal in most jurisdictions; always comply with local laws regarding wireless reception.
+This is a passive research and privacy-auditing tool. It does not transmit Wi-Fi, authenticate to networks, or bypass access controls. Wireless reception and public infrastructure mapping laws vary by jurisdiction. Use responsibly, follow local law, and avoid submitting unverified data.
