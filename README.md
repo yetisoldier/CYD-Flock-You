@@ -189,7 +189,24 @@ Open `http://localhost:5000`, pick your serial port from the UI, detections star
 
 ## Hardware
 
-**Board:** Seeed Studio XIAO ESP32-S3
+**Primary board:** Cheap Yellow Display / ESP32-2432S028R
+
+CYD support adds a TFT status UI, SD-card CSV logging, and a Bluetooth LE UART pairing protocol for the DeFlock Android fork. The phone supplies GPS over BLE; the CYD stays focused on passive WiFi detection. USB serial remains useful for flashing, bench monitoring, and protocol debugging.
+
+| Pin | Function |
+|-----|----------|
+| GPIO 4 | Red RGB LED detection feedback, active low |
+| GPIO 5 | SD card CS |
+| GPIO 12 | TFT MISO |
+| GPIO 13 | TFT MOSI |
+| GPIO 14 | TFT SCLK |
+| GPIO 15 | TFT CS |
+| GPIO 2 | TFT DC |
+| GPIO 21 | TFT backlight |
+| GPIO 26 | Piezo buzzer |
+| GPIO 0 | Screen cycle button |
+
+**Legacy board:** Seeed Studio XIAO ESP32-S3
 
 | Pin | Function |
 |-----|----------|
@@ -206,12 +223,48 @@ Boot sound: first 6 notes of Super Mario Bros. World 1-2 (underground).
 Requires [PlatformIO](https://platformio.org/).
 
 ```bash
-pio run                     # build
-pio run -t upload           # flash
+pio run -e cyd              # build CYD firmware
+pio run -e cyd -t upload    # flash CYD firmware
 pio device monitor          # serial output
 ```
 
-`platformio.ini` and `partitions.csv` are at the root (1.9 MB SPIFFS partition, 6 MB app). No extra libraries needed beyond the Arduino-ESP32 core that ships with the espressif32 platform.
+Shortcut:
+
+```bash
+./scripts/flash-cyd.sh
+```
+
+The XIAO target is still available:
+
+```bash
+pio run -e xiao_esp32s3
+```
+
+`platformio.ini`, `partitions.csv`, and `partitions_cyd.csv` are at the root. The CYD build uses TFT_eSPI and TinyGPSPlus in addition to the Arduino-ESP32 core.
+
+---
+
+## DeFlock Android pairing
+
+Power the CYD separately, then use DeFlock's Bluetooth button to connect to the `CYD-Flock-You` BLE peripheral. The firmware exposes the Nordic UART service:
+
+- Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
+- RX/write: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
+- TX/notify: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
+
+CYD emits a pairing status JSON line every 5 seconds and responds to `FYHELLO`. A paired DeFlock fork should stream phone GPS with `FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>` and listen for `event:"detection"` JSON.
+
+The intended app flow is review-first:
+
+- queue a candidate when CYD detects a target and no surveillance node exists within 250 feet / 76.2 meters
+- place the first marker at the phone GPS coordinate
+- require the user to drag the marker to the roadside camera position
+- require the user to set camera direction manually
+- only then queue the normal DeFlock upload for user approval
+
+Full protocol notes are in [`docs/deflock-pairing-protocol.md`](docs/deflock-pairing-protocol.md).
+
+The companion DeFlock fork lives locally at `/home/yetisoldier/projects/deflock-cyd-app` on branch `cyd-flock-you-integration`. It connects over BLE UART, parses CYD events, queues review candidates, applies the 250-foot duplicate suppression rule, and opens DeFlock's normal map-based add flow for manual roadside placement and camera direction.
 
 ---
 

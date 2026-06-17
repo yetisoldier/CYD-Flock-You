@@ -4,24 +4,67 @@
 #include <ctype.h>
 #include <string.h>
 #include <SPIFFS.h>
+#if CYD_BUILD
+#include <SPI.h>
+#include <SD.h>
+#include <TFT_eSPI.h>
+#include <TinyGPSPlus.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#endif
 
 // ============================================================
 // CONFIG
 // ============================================================
 
-#define BUZZER_PIN 3
+#if CYD_BUILD
+#define BUZZER_PIN 26
 #define USE_BUZZER 1
 
+#define CYD_TFT_BACKLIGHT_PIN 21
+#define CYD_BOOT_BUTTON_PIN   0
+#define CYD_SD_CS_PIN         5
+#define CYD_LOG_FILE          "/flock.csv"
+#define CYD_PROTOCOL_VERSION  1
+#define CYD_PAIR_NAME         "CYD-Flock-You"
+#define CYD_GPS_STALE_MS      10000
+#define CYD_UI_REFRESH_MS     1000
+#define CYD_TFT_ROTATION      1
+#define CYD_TFT_USABLE_W      320
+#define CYD_TFT_USABLE_H      240
+#define CYD_BLE_SERVICE_UUID  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CYD_BLE_RX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CYD_BLE_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CYD_BLE_CHUNK_BYTES   20
+#else
+#define BUZZER_PIN 3
+#define USE_BUZZER 1
+#endif
+
+#if CYD_BUILD
+// CYD RGB LEDs are active low. Red is safe to use for detection feedback.
+#define LED_PIN          4
+#define USE_LED          1
+#define LED_ACTIVE_HIGH  0
+#define LED_FLASH_MS     120
+#else
 // Onboard user LED on Seeed XIAO ESP32-S3 is GPIO21 and is ACTIVE LOW
 // (driving the pin LOW lights the LED).
 #define LED_PIN          21
 #define USE_LED          1
 #define LED_ACTIVE_HIGH  0
 #define LED_FLASH_MS     120
+#endif
 
+#if CYD_BUILD
+#define MIRROR_SERIAL    0
+#else
 #define MIRROR_SERIAL    1
 #define MIRROR_TX_PIN    43
 #define MIRROR_BAUD      115200
+#endif
 
 #define CHANNEL_MODE_FULL_HOP   0
 #define CHANNEL_MODE_CUSTOM     1
@@ -213,6 +256,74 @@ static volatile unsigned long ledOffAt = 0;
 static unsigned long fyLastTargetSeen  = 0;
 static unsigned long fyLastHeartbeatAt = 0;
 
+#if CYD_BUILD
+// ============================================================
+// CYD DISPLAY / GPS / SD STATE
+// ============================================================
+
+static TFT_eSPI tft = TFT_eSPI();
+static TinyGPSPlus phoneGps;
+
+typedef enum : uint8_t {
+  SCREEN_SCAN = 0,
+  SCREEN_GPS,
+  SCREEN_LOG,
+  SCREEN_LAST,
+  SCREEN_COUNT
+} CydScreen;
+
+typedef struct {
+  bool hasFix;
+  bool hasTime;
+  double lat;
+  double lng;
+  double accuracyM;
+  double speedKmph;
+  double courseDeg;
+  uint32_t sats;
+  double hdop;
+  uint32_t unixTime;
+  int16_t utcOffsetMin;
+  unsigned long lastFixMs;
+  unsigned long lastTimeSyncMs;
+  char source[8];
+} CydGpsState;
+
+static CydGpsState cydGps = {};
+static CydScreen cydScreen = SCREEN_SCAN;
+static bool cydDisplayReady = false;
+static bool cydSdReady = false;
+static uint32_t cydCsvRows = 0;
+static uint32_t cydSdFailures = 0;
+static unsigned long cydLastUiDraw = 0;
+static unsigned long cydLastButtonAt = 0;
+static bool cydLastButtonState = HIGH;
+static char cydLastMac[18] = "";
+static char cydLastMethod[20] = "";
+static int cydLastRssi = 0;
+static uint8_t cydLastChannel = 0;
+static uint16_t cydLastCount = 0;
+static bool cydLastLocationValid = false;
+static double cydLastLat = 0;
+static double cydLastLng = 0;
+static unsigned long cydLastDetectionMs = 0;
+static unsigned long cydLastPairAnnounce = 0;
+
+static BLECharacteristic* cydBleTx = nullptr;
+static bool cydBleReady = false;
+static volatile bool cydBleClientConnected = false;
+
+#define CYD_BLE_RX_QUEUE_SIZE 8
+#define CYD_BLE_RX_LINE_SIZE 180
+static char cydBleRxQueue[CYD_BLE_RX_QUEUE_SIZE][CYD_BLE_RX_LINE_SIZE];
+static volatile uint8_t cydBleRxHead = 0;
+static volatile uint8_t cydBleRxTail = 0;
+static portMUX_TYPE cydBleRxMux = portMUX_INITIALIZER_UNLOCKED;
+static void cydBleWriteBytes(const uint8_t* data, size_t len);
+#endif
+static void emitDetectionJSON(const char* mac, const char* method,
+                              int8_t rssi, uint8_t ch, const char* ssid);
+
 // ============================================================
 // 802.11 HEADER
 // ============================================================
@@ -244,6 +355,9 @@ static void dualPrintf(const char* fmt, ...) {
 #if MIRROR_SERIAL
     Serial1.write(_dualBuf, n);
 #endif
+#if CYD_BUILD
+    cydBleWriteBytes((const uint8_t*)_dualBuf, (size_t)n);
+#endif
   }
 }
 
@@ -251,6 +365,10 @@ static void dualPrintln(const char* str) {
   Serial.println(str);
 #if MIRROR_SERIAL
   Serial1.println(str);
+#endif
+#if CYD_BUILD
+  cydBleWriteBytes((const uint8_t*)str, strlen(str));
+  cydBleWriteBytes((const uint8_t*)"\n", 1);
 #endif
 }
 
@@ -748,6 +866,535 @@ static void fyPromotePrevSession() {
              source, (unsigned)sz);
 }
 
+#if CYD_BUILD
+// ============================================================
+// CYD PHONE PAIRING / DISPLAY / SD CSV
+// ============================================================
+
+static bool cydGpsFresh() {
+  return cydGps.hasFix && (millis() - cydGps.lastFixMs) <= CYD_GPS_STALE_MS;
+}
+
+static void cydSetGps(double lat, double lng, double accuracyM, double speedKmph,
+                      double courseDeg, uint32_t sats, double hdop,
+                      uint32_t unixTime, int16_t utcOffsetMin,
+                      const char* source) {
+  cydGps.hasFix = true;
+  cydGps.lat = lat;
+  cydGps.lng = lng;
+  cydGps.accuracyM = accuracyM;
+  cydGps.speedKmph = speedKmph;
+  cydGps.courseDeg = courseDeg;
+  cydGps.sats = sats;
+  cydGps.hdop = hdop;
+  cydGps.lastFixMs = millis();
+  if (unixTime > 0) {
+    cydGps.hasTime = true;
+    cydGps.unixTime = unixTime;
+    cydGps.utcOffsetMin = utcOffsetMin;
+    cydGps.lastTimeSyncMs = cydGps.lastFixMs;
+  }
+  strlcpy(cydGps.source, source ? source : "phone", sizeof(cydGps.source));
+}
+
+static void cydFormatClock(char* out, size_t cap, unsigned long now) {
+  if (!out || cap == 0) return;
+  if (!cydGps.hasTime) {
+    strlcpy(out, "--:--", cap);
+    return;
+  }
+
+  int64_t elapsedSec = (int64_t)((now - cydGps.lastTimeSyncMs) / 1000);
+  int64_t localSec = (int64_t)cydGps.unixTime + elapsedSec +
+                     ((int64_t)cydGps.utcOffsetMin * 60);
+  int32_t daySec = (int32_t)(localSec % 86400);
+  if (daySec < 0) daySec += 86400;
+
+  snprintf(out, cap, "%02d:%02d", daySec / 3600, (daySec % 3600) / 60);
+}
+
+static void cydDrawDashboardFooter(unsigned long now) {
+  char timeBuf[8];
+  cydFormatClock(timeBuf, sizeof(timeBuf), now);
+
+  const int footerY = CYD_TFT_USABLE_H - 38;
+  tft.fillRect(0, footerY, CYD_TFT_USABLE_W, 38, TFT_BLACK);
+  tft.drawFastHLine(0, footerY, CYD_TFT_USABLE_W, TFT_NAVY);
+  tft.setTextSize(1);
+  tft.setTextColor(cydBleClientConnected ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
+  tft.drawString(cydBleClientConnected ? "BT ok" : "BT wait", 8, footerY + 7);
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(timeBuf, 118, footerY + 7);
+
+  if (cydLastLocationValid) {
+    tft.drawString("Last", 8, footerY + 23);
+    tft.drawFloat(cydLastLat, 4, 46, footerY + 23);
+    tft.drawString(",", 98, footerY + 23);
+    tft.drawFloat(cydLastLng, 4, 108, footerY + 23);
+  } else {
+    tft.drawString("Last location: none", 8, footerY + 23);
+  }
+}
+
+static void cydEmitPairStatus() {
+  dualPrintf(
+      "{\"event\":\"pair_status\","
+      "\"device\":\"%s\","
+      "\"protocol_version\":%u,"
+      "\"features\":[\"wifi_promisc\",\"phone_gps\",\"sd_csv\",\"tft_status\",\"ble_uart\"],"
+      "\"gps\":%s,"
+      "\"sd\":%s,"
+      "\"detections\":%d,"
+      "\"csv_rows\":%lu}\n",
+      CYD_PAIR_NAME,
+      (unsigned)CYD_PROTOCOL_VERSION,
+      cydGpsFresh() ? "true" : "false",
+      cydSdReady ? "true" : "false",
+      fyDetCount,
+      (unsigned long)cydCsvRows);
+}
+
+static void cydInitDisplay() {
+  pinMode(CYD_TFT_BACKLIGHT_PIN, OUTPUT);
+  digitalWrite(CYD_TFT_BACKLIGHT_PIN, HIGH);
+  pinMode(CYD_BOOT_BUTTON_PIN, INPUT_PULLUP);
+
+  tft.init();
+  tft.setRotation(CYD_TFT_ROTATION);
+  tft.invertDisplay(true);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  cydDisplayReady = true;
+}
+
+static void cydDrawHeader(const char* title) {
+  tft.fillRect(0, 0, CYD_TFT_USABLE_W, 30, TFT_NAVY);
+  tft.setTextColor(TFT_WHITE, TFT_NAVY);
+  tft.setTextSize(2);
+  tft.drawString(title, 8, 7);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
+  tft.drawString("BTN", CYD_TFT_USABLE_W - 28, 11);
+}
+
+static void cydDrawUi(bool force = false) {
+  if (!cydDisplayReady) return;
+  unsigned long now = millis();
+  if (!force && now - cydLastUiDraw < CYD_UI_REFRESH_MS) return;
+  cydLastUiDraw = now;
+  char timeBuf[8];
+
+  tft.fillRect(0, 0, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H, TFT_BLACK);
+  switch (cydScreen) {
+    case SCREEN_SCAN:
+      cydDrawHeader("CYD Flock-You");
+      tft.setTextColor((cydLastDetectionMs && now - cydLastDetectionMs < 15000)
+                       ? TFT_RED : TFT_GREEN, TFT_BLACK);
+      tft.setTextSize(3);
+      tft.drawString((cydLastDetectionMs && now - cydLastDetectionMs < 15000)
+                     ? "HIT" : "SCAN", 8, 44);
+      tft.setTextSize(2);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("Ch", 8, 86);
+      tft.drawNumber(currentChannel, 56, 86);
+      tft.drawString("Hits", 8, 112);
+      tft.drawNumber(fyDetCount, 72, 112);
+      tft.drawString("GPS", 8, 138);
+      tft.setTextColor(cydGpsFresh() ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
+      tft.drawString(cydGpsFresh() ? "fix" : "wait", 72, 138);
+      tft.setTextColor(cydSdReady ? TFT_GREEN : TFT_RED, TFT_BLACK);
+      tft.drawString(cydSdReady ? "SD ok" : "SD miss", 8, 164);
+      cydDrawDashboardFooter(now);
+      break;
+
+    case SCREEN_GPS:
+      cydDrawHeader("Phone GPS");
+      tft.setTextSize(2);
+      tft.setTextColor(cydGpsFresh() ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
+      tft.drawString(cydGpsFresh() ? "Fresh fix" : "No fresh fix", 8, 48);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("Lat", 8, 86);
+      tft.drawFloat(cydGps.lat, 6, 80, 86);
+      tft.drawString("Lon", 8, 116);
+      tft.drawFloat(cydGps.lng, 6, 80, 116);
+      tft.drawString("Acc", 8, 146);
+      tft.drawFloat(cydGps.accuracyM, 1, 80, 146);
+      tft.drawString("m", 170, 146);
+      tft.drawString("Age", 8, 176);
+      tft.drawNumber(cydGps.hasFix ? (int)((now - cydGps.lastFixMs) / 1000) : -1, 80, 176);
+      tft.drawString("s", 126, 176);
+      break;
+
+    case SCREEN_LOG:
+      cydDrawHeader("CSV Log");
+      tft.setTextSize(2);
+      tft.setTextColor(cydSdReady ? TFT_GREEN : TFT_RED, TFT_BLACK);
+      tft.drawString(cydSdReady ? "SD mounted" : "SD unavailable", 8, 48);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(CYD_LOG_FILE, 8, 84);
+      tft.drawString("Rows", 8, 126);
+      tft.drawNumber(cydCsvRows, 78, 126);
+      tft.drawString("Failures", 8, 156);
+      tft.drawNumber(cydSdFailures, 118, 156);
+      break;
+
+    case SCREEN_LAST:
+      cydDrawHeader("Last Detection");
+      tft.setTextSize(2);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString(cydLastMac[0] ? cydLastMac : "none yet", 8, 48);
+      tft.drawString("Method", 8, 86);
+      tft.drawString(cydLastMethod, 102, 86);
+      tft.drawString("RSSI", 8, 116);
+      tft.drawNumber(cydLastRssi, 78, 116);
+      tft.drawString("Ch", 8, 146);
+      tft.drawNumber(cydLastChannel, 78, 146);
+      tft.drawString("Hits", 8, 176);
+      tft.drawNumber(cydLastCount, 78, 176);
+      tft.setTextSize(1);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.drawString("BT", 8, 210);
+      tft.setTextColor(cydBleClientConnected ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
+      tft.drawString(cydBleClientConnected ? "connected" : "waiting", 36, 210);
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      cydFormatClock(timeBuf, sizeof(timeBuf), now);
+      tft.drawString("Time", 132, 210);
+      tft.drawString(timeBuf, 174, 210);
+      tft.drawString("Loc", 8, 234);
+      if (cydLastLocationValid) {
+        tft.drawFloat(cydLastLat, 5, 42, 234);
+        tft.drawString(",", 104, 234);
+        tft.drawFloat(cydLastLng, 5, 116, 234);
+      } else {
+        tft.drawString("none captured", 42, 234);
+      }
+      break;
+
+    default:
+      cydScreen = SCREEN_SCAN;
+      break;
+  }
+}
+
+static void cydButtonTick() {
+  bool state = digitalRead(CYD_BOOT_BUTTON_PIN);
+  unsigned long now = millis();
+  if (cydLastButtonState == HIGH && state == LOW && now - cydLastButtonAt > 250) {
+    cydScreen = (CydScreen)(((uint8_t)cydScreen + 1) % SCREEN_COUNT);
+    cydLastButtonAt = now;
+    cydDrawUi(true);
+  }
+  cydLastButtonState = state;
+}
+
+static void cydInitSd() {
+  cydSdReady = SD.begin(CYD_SD_CS_PIN);
+  if (!cydSdReady) {
+    dualPrintln("[cyd] SD init failed; CSV logging disabled");
+    return;
+  }
+
+  if (!SD.exists(CYD_LOG_FILE)) {
+    File f = SD.open(CYD_LOG_FILE, FILE_WRITE);
+    if (f) {
+      f.println("millis,mac,oui,method,rssi,channel,frequency_mhz,lat,lon,accuracy_m,gps_age_ms,speed_kmph,course_deg,count");
+      f.close();
+    }
+  }
+  dualPrintln("[cyd] SD ready; CSV logging enabled");
+}
+
+static void cydLogDetectionCsv(const char* mac, const char* oui, const char* method,
+                               int8_t rssi, uint8_t ch, uint16_t count) {
+  if (!cydSdReady) return;
+  File f = SD.open(CYD_LOG_FILE, FILE_APPEND);
+  if (!f) {
+    cydSdFailures++;
+    return;
+  }
+
+  unsigned long now = millis();
+  long gpsAge = cydGps.hasFix ? (long)(now - cydGps.lastFixMs) : -1;
+  f.printf("%lu,%s,%s,%s,%d,%u,%u,",
+           now, mac, oui, method, (int)rssi, (unsigned)ch,
+           (unsigned)channelFreqMhz(ch));
+  if (cydGps.hasFix) {
+    f.printf("%.6f,%.6f,%.1f,%ld,%.1f,%.1f,%u\n",
+             cydGps.lat, cydGps.lng, cydGps.accuracyM, gpsAge,
+             cydGps.speedKmph, cydGps.courseDeg, (unsigned)count);
+  } else {
+    f.printf(",,,,,,%u\n", (unsigned)count);
+  }
+  f.close();
+  cydCsvRows++;
+}
+
+static void cydRecordDetection(const char* mac, const char* oui, const char* method,
+                               int8_t rssi, uint8_t ch, uint16_t count) {
+  strlcpy(cydLastMac, mac, sizeof(cydLastMac));
+  strlcpy(cydLastMethod, method, sizeof(cydLastMethod));
+  cydLastRssi = rssi;
+  cydLastChannel = ch;
+  cydLastCount = count;
+  cydLastDetectionMs = millis();
+  cydLastLocationValid = cydGpsFresh();
+  if (cydLastLocationValid) {
+    cydLastLat = cydGps.lat;
+    cydLastLng = cydGps.lng;
+  }
+  cydLogDetectionCsv(mac, oui, method, rssi, ch, count);
+  cydDrawUi(true);
+}
+
+static void cydEmitSimulatedDetection() {
+  static uint8_t simCounter = 0;
+  char mac[18];
+  snprintf(mac, sizeof(mac), "70:c9:4e:fa:ce:%02x", simCounter++);
+
+  const char* method = "wildcard_probe";
+  const char* ssid = "Flock-Test";
+  const int8_t rssi = -42;
+  const uint8_t channel = currentChannel ? currentChannel : 6;
+  char oui[9] = "70:c9:4e";
+
+  bool chirpWorthy = false;
+  int idx = fyAddDetection(mac, method, rssi, channel, ssid, &chirpWorthy);
+  uint16_t count = (idx >= 0) ? fyDet[idx].count : 0;
+  fyLastTargetSeen = millis();
+
+  dualPrintf("[cyd] simulated detection mac=%s rssi=%d ch=%u\n",
+             mac, (int)rssi, (unsigned)channel);
+  cydRecordDetection(mac, oui, method, rssi, channel, count);
+  emitDetectionJSON(mac, method, rssi, channel, ssid);
+
+  if (chirpWorthy) {
+    newDetectChirp();
+    fyLastHeartbeatAt = millis();
+  }
+  ledFlash(LED_FLASH_MS);
+}
+
+static void cydParseGpsCsv(char* line) {
+  char* save = nullptr;
+  strtok_r(line, ",", &save); // command
+  char* latTok = strtok_r(nullptr, ",", &save);
+  char* lonTok = strtok_r(nullptr, ",", &save);
+  if (!latTok || !lonTok) return;
+
+  double lat = atof(latTok);
+  double lon = atof(lonTok);
+  double acc = 0;
+  double speed = 0;
+  double course = 0;
+  uint32_t sats = 0;
+  double hdop = 0;
+
+  char* tok = strtok_r(nullptr, ",", &save); if (tok) acc = atof(tok);
+  tok = strtok_r(nullptr, ",", &save); if (tok) speed = atof(tok);
+  tok = strtok_r(nullptr, ",", &save); if (tok) course = atof(tok);
+  tok = strtok_r(nullptr, ",", &save); if (tok) sats = (uint32_t)strtoul(tok, nullptr, 10);
+  tok = strtok_r(nullptr, ",", &save); if (tok) hdop = atof(tok);
+  tok = strtok_r(nullptr, ",", &save);
+  uint32_t unixTime = tok ? (uint32_t)strtoul(tok, nullptr, 10) : 0;
+  tok = strtok_r(nullptr, ",", &save);
+  int16_t utcOffsetMin = tok ? (int16_t)atoi(tok) : 0;
+
+  cydSetGps(lat, lon, acc, speed, course, sats, hdop,
+            unixTime, utcOffsetMin, "phone");
+}
+
+static void cydParseNmeaLine(const char* line) {
+  for (const char* p = line; *p; p++) {
+    phoneGps.encode(*p);
+  }
+  phoneGps.encode('\n');
+  if (phoneGps.location.isUpdated() && phoneGps.location.isValid()) {
+    cydSetGps(
+        phoneGps.location.lat(),
+        phoneGps.location.lng(),
+        phoneGps.hdop.isValid() ? phoneGps.hdop.hdop() * 5.0 : 0,
+        phoneGps.speed.isValid() ? phoneGps.speed.kmph() : 0,
+        phoneGps.course.isValid() ? phoneGps.course.deg() : 0,
+        phoneGps.satellites.isValid() ? phoneGps.satellites.value() : 0,
+        phoneGps.hdop.isValid() ? phoneGps.hdop.hdop() : 0,
+        0,
+        0,
+        "nmea");
+  }
+}
+
+static void cydHandleCommand(char* line) {
+  if (!line || !line[0]) return;
+  if (strcmp(line, "FYHELLO") == 0 || strcmp(line, "FYSTATUS") == 0) {
+    cydEmitPairStatus();
+    return;
+  }
+  if (strcmp(line, "FYSCREEN,next") == 0) {
+    cydScreen = (CydScreen)(((uint8_t)cydScreen + 1) % SCREEN_COUNT);
+    cydDrawUi(true);
+    return;
+  }
+  if (strcmp(line, "FYSIM") == 0) {
+    cydEmitSimulatedDetection();
+    return;
+  }
+  if (strncmp(line, "FYGPS,", 6) == 0) {
+    cydParseGpsCsv(line);
+    cydDrawUi(false);
+    return;
+  }
+  if (line[0] == '$') {
+    cydParseNmeaLine(line);
+    cydDrawUi(false);
+  }
+}
+
+static bool cydBleEnqueueLine(const char* line) {
+  if (!line || !line[0]) return true;
+
+  portENTER_CRITICAL(&cydBleRxMux);
+  uint8_t next = (uint8_t)((cydBleRxHead + 1) % CYD_BLE_RX_QUEUE_SIZE);
+  if (next == cydBleRxTail) {
+    portEXIT_CRITICAL(&cydBleRxMux);
+    return false;
+  }
+  strlcpy(cydBleRxQueue[cydBleRxHead], line, CYD_BLE_RX_LINE_SIZE);
+  cydBleRxHead = next;
+  portEXIT_CRITICAL(&cydBleRxMux);
+  return true;
+}
+
+static bool cydBleDequeueLine(char* out, size_t cap) {
+  if (!out || cap == 0) return false;
+
+  portENTER_CRITICAL(&cydBleRxMux);
+  if (cydBleRxHead == cydBleRxTail) {
+    portEXIT_CRITICAL(&cydBleRxMux);
+    return false;
+  }
+  strlcpy(out, cydBleRxQueue[cydBleRxTail], cap);
+  cydBleRxTail = (uint8_t)((cydBleRxTail + 1) % CYD_BLE_RX_QUEUE_SIZE);
+  portEXIT_CRITICAL(&cydBleRxMux);
+  return true;
+}
+
+static void cydBleDrainCommands() {
+  char line[CYD_BLE_RX_LINE_SIZE];
+  while (cydBleDequeueLine(line, sizeof(line))) {
+    cydHandleCommand(line);
+  }
+}
+
+class CydBleServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* server) override {
+    (void)server;
+    cydBleClientConnected = true;
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    cydBleClientConnected = false;
+    server->getAdvertising()->start();
+  }
+};
+
+class CydBleRxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    std::string value = characteristic->getValue();
+    static char line[CYD_BLE_RX_LINE_SIZE];
+    static size_t len = 0;
+
+    for (size_t i = 0; i < value.length(); i++) {
+      char c = value[i];
+      if (c == '\r') continue;
+      if (c == '\n') {
+        line[len] = '\0';
+        cydBleEnqueueLine(line);
+        len = 0;
+      } else if (len + 1 < sizeof(line)) {
+        line[len++] = c;
+      } else {
+        len = 0;
+      }
+    }
+  }
+};
+
+static void cydBleWriteBytes(const uint8_t* data, size_t len) {
+  if (!cydBleReady || !cydBleClientConnected || !cydBleTx || !data || len == 0) {
+    return;
+  }
+
+  for (size_t offset = 0; offset < len; offset += CYD_BLE_CHUNK_BYTES) {
+    size_t chunk = len - offset;
+    if (chunk > CYD_BLE_CHUNK_BYTES) chunk = CYD_BLE_CHUNK_BYTES;
+    cydBleTx->setValue((uint8_t*)data + offset, chunk);
+    cydBleTx->notify();
+    delay(3);
+  }
+}
+
+static void cydBleInit() {
+  BLEDevice::init(CYD_PAIR_NAME);
+  BLEDevice::setMTU(185);
+
+  BLEServer* server = BLEDevice::createServer();
+  server->setCallbacks(new CydBleServerCallbacks());
+
+  BLEService* service = server->createService(CYD_BLE_SERVICE_UUID);
+  cydBleTx = service->createCharacteristic(
+      CYD_BLE_TX_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY);
+  cydBleTx->addDescriptor(new BLE2902());
+
+  BLECharacteristic* rx = service->createCharacteristic(
+      CYD_BLE_RX_UUID,
+      BLECharacteristic::PROPERTY_WRITE |
+      BLECharacteristic::PROPERTY_WRITE_NR);
+  rx->setCallbacks(new CydBleRxCallbacks());
+
+  service->start();
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(CYD_BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->start();
+  cydBleReady = true;
+}
+
+static void cydSerialTick() {
+  static char line[180];
+  static size_t len = 0;
+
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      line[len] = '\0';
+      cydHandleCommand(line);
+      len = 0;
+    } else if (len + 1 < sizeof(line)) {
+      line[len++] = c;
+    } else {
+      len = 0;
+    }
+  }
+
+  if (millis() - cydLastPairAnnounce > 5000) {
+    cydEmitPairStatus();
+    cydLastPairAnnounce = millis();
+  }
+}
+
+static void cydInit() {
+  cydInitDisplay();
+  cydInitSd();
+  cydBleInit();
+  cydEmitPairStatus();
+  cydDrawUi(true);
+}
+#endif
+
 // ============================================================
 // FLASK-COMPATIBLE JSON EMISSION
 // ============================================================
@@ -757,8 +1404,8 @@ static void fyPromotePrevSession() {
 // and extracts these fields:  mac_address, rssi, channel, frequency, ssid,
 // device_name, gps.latitude, gps.longitude, gps.accuracy.
 //
-// GPS is handled Flask-side via its own USB NMEA puck or browser geolocation;
-// we don't embed GPS here because there's no on-device AP / phone link.
+// On CYD builds the paired phone can stream GPS into the device; when a fresh
+// fix is present, detections include gps.* fields for the DeFlock fork.
 
 static void emitDetectionJSON(const char* mac, const char* method,
                               int8_t rssi, uint8_t ch, const char* ssid) {
@@ -770,6 +1417,16 @@ static void emitDetectionJSON(const char* mac, const char* method,
          &mbytes[0], &mbytes[1], &mbytes[2], &mbytes[3], &mbytes[4], &mbytes[5]);
   ouiFromMac(mbytes, oui, sizeof(oui));
 
+#if CYD_BUILD
+  char gpsSuffix[180] = "";
+  if (cydGpsFresh()) {
+    snprintf(gpsSuffix, sizeof(gpsSuffix),
+             ",\"gps\":{\"latitude\":%.6f,\"longitude\":%.6f,\"accuracy\":%.1f,\"age_ms\":%lu,\"source\":\"%s\"}",
+             cydGps.lat, cydGps.lng, cydGps.accuracyM,
+             (unsigned long)(millis() - cydGps.lastFixMs), cydGps.source);
+  }
+#endif
+
   dualPrintf(
       "{\"event\":\"detection\","
       "\"detection_method\":\"wifi_%s\","
@@ -780,9 +1437,17 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"rssi\":%d,"
       "\"channel\":%u,"
       "\"frequency\":%u,"
-      "\"ssid\":\"%s\"}\n",
+      "\"ssid\":\"%s\""
+#if CYD_BUILD
+      "%s"
+#endif
+      "}\n",
       method, mac, oui, rssi,
-      (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc);
+      (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc
+#if CYD_BUILD
+      , gpsSuffix
+#endif
+      );
 }
 
 // ============================================================
@@ -992,6 +1657,11 @@ static void drainAlertQueue() {
                  (idx >= 0) ? (int)fyDet[idx].count : 0);
     }
 
+#if CYD_BUILD
+    cydRecordDetection(macStr, oui, method, e.rssi, e.channel,
+                       (idx >= 0) ? fyDet[idx].count : 0);
+#endif
+
     // Flask-compatible JSON line (parsed by api/flockyou.py over USB CDC).
     emitDetectionJSON(macStr, method, e.rssi, e.channel,
                       (e.type == ALERT_SSID) ? e.ssid : "");
@@ -1044,9 +1714,11 @@ static void heartbeatTick() {
 
 void setup() {
   Serial.begin(115200);
+#if !CYD_BUILD
   // Crucial for USB-optional operation: without this, Serial.write() will
   // block indefinitely on an ESP32-S3 USB-CDC port when no host is attached.
   Serial.setTxTimeoutMs(0);
+#endif
   delay(300);
 
 #if MIRROR_SERIAL
@@ -1070,6 +1742,10 @@ void setup() {
 
   precompileOuis();
   memset(dedupeTable, 0, sizeof(dedupeTable));
+
+#if CYD_BUILD
+  cydInit();
+#endif
 
   // SPIFFS — format on first boot if missing. Non-fatal if it fails.
   if (SPIFFS.begin(true)) {
@@ -1112,6 +1788,12 @@ void setup() {
 }
 
 void loop() {
+#if CYD_BUILD
+  cydSerialTick();
+  cydBleDrainCommands();
+  cydButtonTick();
+  cydDrawUi(false);
+#endif
   updateChannelMode();
   drainAlertQueue();   // Serial.printf happens here, not in callback
   autosaveTick();      // periodic SPIFFS write if dirty
