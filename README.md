@@ -4,6 +4,15 @@ Cheap Yellow Display firmware and DeFlock Android companion work for passive, hu
 
 This project turns an ESP32 Cheap Yellow Display (ESP32-2432S028R, usually called a CYD) into a field sensor that watches 2.4 GHz Wi-Fi traffic for known Flock-style RF signatures. The Android companion work connects over Bluetooth LE, streams phone GPS to the CYD, receives detections, and opens a review-first DeFlock workflow so a human can place and submit the camera location accurately.
 
+## Repository Pair
+
+This public beta is split across two repositories:
+
+- CYD firmware: [`yetisoldier/CYD-Flock-You`](https://github.com/yetisoldier/CYD-Flock-You)
+- Android companion branch: [`yetisoldier/deflock-app`, branch `cyd-flock-you-integration`](https://github.com/yetisoldier/deflock-app/tree/cyd-flock-you-integration)
+
+Use this firmware with the companion Android branch above. Upstream DeFlock releases do not yet include the CYD Bluetooth workflow.
+
 ## Status
 
 This is ready as a public beta, not as a polished consumer product.
@@ -245,6 +254,9 @@ Detection output:
 
 More detail is in [`docs/deflock-pairing-protocol.md`](docs/deflock-pairing-protocol.md).
 
+For the latest build/test snapshot, hardware assumptions, and field lessons, see
+[`docs/current-state.md`](docs/current-state.md).
+
 ## CSV Log
 
 When SD is available, detections append to:
@@ -275,7 +287,8 @@ Detection methods include:
 - `wifi_oui_addr2`: transmitter address OUI match.
 - `wifi_oui_addr1`: receiver-side OUI match, useful for quiet/sleeping infrastructure.
 - `wifi_oui_addr3`: BSSID OUI match, disabled by default.
-- `wifi_ssid`: SSID keyword match, disabled by default.
+- `wifi_ssid`: SSID keyword match for Flock-style strings such as `flock`, `flck`, and `test_flck`.
+- `wifi_hidden_ssid`: hidden beacon/probe-response from a known OUI.
 
 The target OUI list and research credit are documented in [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md).
 

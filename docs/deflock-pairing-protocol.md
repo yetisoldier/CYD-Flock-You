@@ -36,6 +36,18 @@ The CYD replies immediately, and also repeats this every 5 seconds:
 
 Use `device == "CYD-Flock-You"` and `protocol_version == 1` as the pairing check.
 
+Current firmware also includes diagnostic fields in `pair_status`:
+
+```json
+{"scan_mode":"full_hop","channel":6,"rx_frames":1000,"rx_mgmt":900,"rx_data":100,"queue_drops":0}
+```
+
+Use these during field testing:
+
+- `rx_frames == 0`: the CYD is not receiving Wi-Fi frames.
+- `rx_frames > 0` and no detections: RF is present, but signatures are not matching.
+- `queue_drops > 0`: the Wi-Fi callback is producing alerts faster than the loop can drain them.
+
 ## Phone GPS Input
 
 The app should stream the phone location once per second while paired:
@@ -49,6 +61,14 @@ Example:
 ```text
 FYGPS,45.171234,-93.225678,6.5,38.2,184.0,12,0.9
 ```
+
+The current Android branch sends the extended format:
+
+```text
+FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>,<unix_time>,<utc_offset_min>
+```
+
+The CYD accepts both formats. The extended fields let the CYD show local time while keeping the older GPS-only protocol compatible.
 
 The CYD treats GPS as fresh for 10 seconds. Fresh GPS is embedded into detection JSON and written to the SD CSV log.
 

@@ -71,8 +71,13 @@
 #define CHANNEL_MODE_CUSTOM     1
 #define CHANNEL_MODE_SINGLE     2
 
+#if CYD_BUILD
+#define CHANNEL_MODE CHANNEL_MODE_FULL_HOP
+#define CHANNEL_DWELL_MS 400
+#else
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
 #define CHANNEL_DWELL_MS 350
+#endif
 #define SINGLE_CHANNEL 1
 
 static const uint8_t customChannels[]  = {1, 6, 11};
@@ -103,10 +108,10 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define HB_BEEP_NOTE_MS        70
 #define HB_BEEP_GAP_MS         70
 
-#define ENABLE_SSID_MATCH 0
+#define ENABLE_SSID_MATCH 1
 #define CHECK_ADDR1 1   // dst/rx — catches Flock STAs receiving probe responses
 #define CHECK_ADDR3 0   // bssid fallback for randomised addr2
-static const char* target_ssid_keywords[] = { "flock" };
+static const char* target_ssid_keywords[] = { "flock", "flck", "test_flck" };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
 #define STOP_ON_SSID_HIT 0
@@ -159,6 +164,7 @@ typedef enum : uint8_t {
   // Tight signature from Michael / DeFlockJoplin field research:
   //   https://github.com/DeflockJoplin/flock-you
   ALERT_WILDCARD_PROBE  = 4,
+  ALERT_HIDDEN_SSID     = 5,
 } AlertType;
 
 typedef struct {
@@ -174,12 +180,17 @@ static volatile AlertEntry alertQueue[ALERT_QUEUE_SIZE];
 static volatile size_t alertHead = 0;  // written by callback
 static volatile size_t alertTail = 0;  // read by loop()
 static portMUX_TYPE    queueMux  = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t wifiRxFrames = 0;
+static volatile uint32_t wifiRxMgmtFrames = 0;
+static volatile uint32_t wifiRxDataFrames = 0;
+static volatile uint32_t alertQueueDrops = 0;
 
 static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rssi,
                                     uint8_t ch, const char* ssid, const char* kind) {
   portENTER_CRITICAL_ISR(&queueMux);
   size_t next = (alertHead + 1) % ALERT_QUEUE_SIZE;
   if (next == alertTail) {                         // drop if full — loop() is behind
+    alertQueueDrops++;
     portEXIT_CRITICAL_ISR(&queueMux);
     return;
   }
@@ -210,7 +221,7 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 
 typedef struct {
   char     mac[18];
-  char     method[16];     // "oui_addr2" / "oui_addr1" / "oui_addr3" / "ssid"
+  char     method[16];     // "oui_addr2" / "oui_addr1" / "hidden_ssid" / etc.
   int8_t   rssi;
   uint8_t  channel;
   uint32_t firstSeen;      // millis() at first hit
@@ -579,6 +590,7 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_OUI_ADDR3:      return "oui_addr3";
     case ALERT_SSID:           return "ssid";
     case ALERT_WILDCARD_PROBE: return "wildcard_probe";
+    case ALERT_HIDDEN_SSID:    return "hidden_ssid";
     default:                   return "unknown";
   }
 }
@@ -948,13 +960,25 @@ static void cydEmitPairStatus() {
       "\"gps\":%s,"
       "\"sd\":%s,"
       "\"detections\":%d,"
-      "\"csv_rows\":%lu}\n",
+      "\"csv_rows\":%lu,"
+      "\"scan_mode\":\"%s\","
+      "\"channel\":%u,"
+      "\"rx_frames\":%lu,"
+      "\"rx_mgmt\":%lu,"
+      "\"rx_data\":%lu,"
+      "\"queue_drops\":%lu}\n",
       CYD_PAIR_NAME,
       (unsigned)CYD_PROTOCOL_VERSION,
       cydGpsFresh() ? "true" : "false",
       cydSdReady ? "true" : "false",
       fyDetCount,
-      (unsigned long)cydCsvRows);
+      (unsigned long)cydCsvRows,
+      channelModeName(),
+      (unsigned)currentChannel,
+      (unsigned long)wifiRxFrames,
+      (unsigned long)wifiRxMgmtFrames,
+      (unsigned long)wifiRxDataFrames,
+      (unsigned long)alertQueueDrops);
 }
 
 static void cydInitDisplay() {
@@ -1522,9 +1546,21 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   wifi_ieee80211_mac_hdr_t*    hdr = (wifi_ieee80211_mac_hdr_t*)pkt->payload;
   int8_t rssi = pkt->rx_ctrl.rssi;
 
+  wifiRxFrames++;
+  if (type == WIFI_PKT_MGMT) wifiRxMgmtFrames++;
+  if (type == WIFI_PKT_DATA) wifiRxDataFrames++;
+
   if (rssi < RSSI_MIN) return;
 
   uint8_t ch = (uint8_t)pkt->rx_ctrl.channel;  // actual rx channel from driver
+  const bool isMgmt = (type == WIFI_PKT_MGMT);
+  uint8_t ftype = 0;
+  uint8_t subtype = 0;
+  if (isMgmt) {
+    uint8_t fc0 = hdr->frame_ctrl & 0xFF;
+    ftype = (fc0 >> 2) & 0x03;
+    subtype = (fc0 >> 4) & 0x0F;
+  }
 
   // --- OUI check: addr2 (transmitter/source) ---
   //
@@ -1537,10 +1573,7 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   // See: https://github.com/DeflockJoplin/flock-you
   if (matchOuiRaw(hdr->addr2)) {
     bool emitted = false;
-    if (type == WIFI_PKT_MGMT) {
-      uint8_t fc0     = hdr->frame_ctrl & 0xFF;
-      uint8_t ftype   = (fc0 >> 2) & 0x03;
-      uint8_t subtype = (fc0 >> 4) & 0x0F;
+    if (isMgmt && ftype == 0) {
       if (ftype == 0 && subtype == 4) {                        // Probe Request
         int sigLen  = (int)pkt->rx_ctrl.sig_len;
         int bodyLen = sigLen - (int)sizeof(wifi_ieee80211_mac_hdr_t);
@@ -1553,6 +1586,18 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         if (r == 1) {
           enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
                        nullptr, "probe_req");
+          emitted = true;
+        }
+      } else if (subtype == 8 || subtype == 5) {                // Beacon / Probe Response
+        int sigLen = (int)pkt->rx_ctrl.sig_len;
+        int off = (int)sizeof(wifi_ieee80211_mac_hdr_t) + 12;
+        int bodyLen = sigLen - off;
+        const uint8_t* body = pkt->payload + off;
+        int r = (bodyLen > 0) ? isWildcardProbeIE(body, bodyLen) : -1;
+        if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
+        if (r == 1) {
+          enqueueAlert(ALERT_HIDDEN_SSID, hdr->addr2, rssi, ch,
+                       nullptr, subtype == 8 ? "hidden_beacon" : "hidden_probe");
           emitted = true;
         }
       }
@@ -1581,11 +1626,7 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 #endif
 
 #if ENABLE_SSID_MATCH
-  if (type == WIFI_PKT_MGMT) {
-    uint8_t fc0     = hdr->frame_ctrl & 0xFF;
-    uint8_t subtype = (fc0 >> 4) & 0x0F;
-    uint8_t ftype   = (fc0 >> 2) & 0x03;
-
+  if (isMgmt) {
     if (ftype == 0) {
       int sigLen = pkt->rx_ctrl.sig_len - 4;  // strip 4-byte FCS
       if (sigLen < (int)sizeof(wifi_ieee80211_mac_hdr_t)) return;
