@@ -1,6 +1,6 @@
 # CYD Flock-You Current State
 
-Last updated: 2026-06-17 20:17 CDT
+Last updated: 2026-06-18 11:05 CDT
 
 This note captures the working state of the CYD Flock-You firmware and its DeFlock Android companion path so the project can be resumed without reconstructing the whole field session.
 
@@ -44,7 +44,7 @@ The `cyd` target currently includes:
 - Lock-free alert queue from Wi-Fi callback into the main loop.
 - SPIFFS session persistence for the in-memory detection table.
 - SD CSV append logging to `/flock.csv`.
-- TFT status UI with DeFlock wordmark.
+- FlockFree-styled TFT status UI with a dark navy/cyan/red field dashboard and FF badge.
 - Button-driven screen cycle: scan, GPS, CSV log, last detection.
 - Visual hit state: `SCAN` changes to `HIT` for 15 seconds.
 - Buzzer chirps and red LED flash on hits.

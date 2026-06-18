@@ -51,8 +51,8 @@ The firmware adds a `cyd` PlatformIO target for ESP32-2432S028R boards.
 
 Major changes:
 
-- TFT_eSPI display support with a field status UI.
-- Dark CYD scan screen with DeFlock wordmark, current channel, hit count, GPS state, SD state, Bluetooth state, local time, and latest captured location.
+- TFT_eSPI display support with a FlockFree-styled field status UI.
+- Dark navy/cyan/red CYD scan screen with an FF badge, current channel, hit count, GPS state, SD state, Bluetooth state, local time, and latest captured location.
 - Screen cycling with the CYD boot button.
 - SD card CSV logging to `/flock.csv`.
 - Bluetooth LE UART using the Nordic UART UUIDs.

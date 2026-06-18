@@ -8,7 +8,6 @@
 #include <SPI.h>
 #include <SD.h>
 #include <TFT_eSPI.h>
-#include "deflock_wordmark_146.h"
 #include <TinyGPSPlus.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -39,6 +38,19 @@
 #define CYD_BLE_RX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CYD_BLE_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CYD_BLE_CHUNK_BYTES   20
+
+// RGB565 approximations of the FlockFree app palette.
+#define CYD_COLOR_BG          0x0004
+#define CYD_COLOR_NAVY        0x0043
+#define CYD_COLOR_SURFACE     0x0829
+#define CYD_COLOR_SURFACE_2   0x104E
+#define CYD_COLOR_CYAN        0x06FC
+#define CYD_COLOR_RED         0xC0E5
+#define CYD_COLOR_GREEN       0x35C9
+#define CYD_COLOR_AMBER       0xFD20
+#define CYD_COLOR_TEXT        0xFFFF
+#define CYD_COLOR_MUTED       0x9CD3
+#define CYD_COLOR_LINE        0x067A
 #else
 #define BUZZER_PIN 3
 #define USE_BUZZER 1
@@ -927,27 +939,80 @@ static void cydFormatClock(char* out, size_t cap, unsigned long now) {
   snprintf(out, cap, "%02d:%02d", daySec / 3600, (daySec % 3600) / 60);
 }
 
+static uint16_t cydBoolColor(bool ok) {
+  return ok ? CYD_COLOR_GREEN : CYD_COLOR_AMBER;
+}
+
+static void cydDrawPanel(int x, int y, int w, int h) {
+  tft.fillRoundRect(x, y, w, h, 6, CYD_COLOR_SURFACE);
+  tft.drawRoundRect(x, y, w, h, 6, CYD_COLOR_LINE);
+}
+
+static void cydDrawMetricBox(int x, int y, int w, int h,
+                             const char* label, const char* value,
+                             uint16_t valueColor) {
+  cydDrawPanel(x, y, w, h);
+  tft.setTextSize(1);
+  tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+  tft.drawString(label, x + 8, y + 6);
+  tft.setTextSize(2);
+  tft.setTextColor(valueColor, CYD_COLOR_SURFACE);
+  tft.drawString(value, x + 8, y + 20);
+}
+
+static void cydDrawMetricNumberBox(int x, int y, int w, int h,
+                                   const char* label, unsigned long value,
+                                   uint16_t valueColor) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%lu", value);
+  cydDrawMetricBox(x, y, w, h, label, buf, valueColor);
+}
+
+static void cydDrawMetricSignedBox(int x, int y, int w, int h,
+                                   const char* label, long value,
+                                   uint16_t valueColor) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%ld", value);
+  cydDrawMetricBox(x, y, w, h, label, buf, valueColor);
+}
+
+static void cydDrawFlockFreeMark(int x, int y, int w, int h) {
+  tft.fillRoundRect(x, y, w, h, 8, CYD_COLOR_NAVY);
+  tft.drawRoundRect(x, y, w, h, 8, CYD_COLOR_CYAN);
+  tft.drawFastHLine(x + 8, y + h - 9, w - 16, CYD_COLOR_RED);
+  tft.drawLine(x + w / 2 - 4, y + h - 11, x + w / 2 + 10, y + 7, CYD_COLOR_CYAN);
+  tft.setTextSize(2);
+  tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_NAVY);
+  tft.drawString("FF", x + 10, y + 8);
+}
+
 static void cydDrawDashboardFooter(unsigned long now) {
   char timeBuf[8];
   cydFormatClock(timeBuf, sizeof(timeBuf), now);
 
-  const int footerY = CYD_TFT_USABLE_H - 38;
-  tft.fillRect(0, footerY, CYD_TFT_USABLE_W, 38, TFT_BLACK);
-  tft.drawFastHLine(0, footerY, CYD_TFT_USABLE_W, TFT_NAVY);
+  const int footerY = CYD_TFT_USABLE_H - 39;
+  tft.fillRect(0, footerY, CYD_TFT_USABLE_W, 39, CYD_COLOR_NAVY);
+  tft.drawFastHLine(0, footerY, CYD_TFT_USABLE_W, CYD_COLOR_CYAN);
   tft.setTextSize(1);
-  tft.setTextColor(cydBleClientConnected ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
-  tft.drawString(cydBleClientConnected ? "BT ok" : "BT wait", 8, footerY + 7);
+  tft.fillRoundRect(8, footerY + 7, 64, 15, 7,
+                    cydBleClientConnected ? CYD_COLOR_GREEN : CYD_COLOR_AMBER);
+  tft.setTextColor(CYD_COLOR_BG,
+                   cydBleClientConnected ? CYD_COLOR_GREEN : CYD_COLOR_AMBER);
+  tft.drawString(cydBleClientConnected ? "BT OK" : "BT WAIT", 14, footerY + 10);
 
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString(timeBuf, 118, footerY + 7);
+  tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_NAVY);
+  tft.drawString(timeBuf, 248, footerY + 10);
 
   if (cydLastLocationValid) {
-    tft.drawString("Last", 8, footerY + 23);
-    tft.drawFloat(cydLastLat, 4, 46, footerY + 23);
-    tft.drawString(",", 98, footerY + 23);
-    tft.drawFloat(cydLastLng, 4, 108, footerY + 23);
+    tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_NAVY);
+    tft.drawString("LAST LOC", 84, footerY + 9);
+    tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_NAVY);
+    tft.drawFloat(cydLastLat, 4, 84, footerY + 24);
+    tft.drawString(",", 138, footerY + 24);
+    tft.drawFloat(cydLastLng, 4, 148, footerY + 24);
   } else {
-    tft.drawString("Last location: none", 8, footerY + 23);
+    tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_NAVY);
+    tft.drawString("LAST LOC: none", 84, footerY + 24);
   }
 }
 
@@ -989,20 +1054,25 @@ static void cydInitDisplay() {
   tft.init();
   tft.setRotation(CYD_TFT_ROTATION);
   tft.invertDisplay(true);
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.fillScreen(CYD_COLOR_BG);
+  tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_BG);
   tft.setTextDatum(TL_DATUM);
   cydDisplayReady = true;
 }
 
 static void cydDrawHeader(const char* title) {
-  tft.fillRect(0, 0, CYD_TFT_USABLE_W, 30, TFT_NAVY);
-  tft.setTextColor(TFT_WHITE, TFT_NAVY);
+  tft.fillRect(0, 0, CYD_TFT_USABLE_W, 36, CYD_COLOR_NAVY);
+  tft.drawFastHLine(0, 35, CYD_TFT_USABLE_W, CYD_COLOR_CYAN);
+  tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_NAVY);
   tft.setTextSize(2);
-  tft.drawString(title, 8, 7);
+  tft.drawString("FlockFree CYD", 8, 4);
   tft.setTextSize(1);
-  tft.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
-  tft.drawString("BTN", CYD_TFT_USABLE_W - 28, 11);
+  tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_NAVY);
+  tft.drawString(title, 10, 24);
+  tft.fillRoundRect(CYD_TFT_USABLE_W - 42, 8, 34, 18, 9, CYD_COLOR_SURFACE_2);
+  tft.drawRoundRect(CYD_TFT_USABLE_W - 42, 8, 34, 18, 9, CYD_COLOR_CYAN);
+  tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_SURFACE_2);
+  tft.drawString("BTN", CYD_TFT_USABLE_W - 35, 13);
 }
 
 static void cydDrawUi(bool force = false) {
@@ -1014,100 +1084,106 @@ static void cydDrawUi(bool force = false) {
   bool fullRedraw = force || cydLastDrawnScreen != cydScreen;
 
   if (fullRedraw) {
-    tft.fillRect(0, 0, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H, TFT_BLACK);
+    tft.fillRect(0, 0, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H, CYD_COLOR_BG);
     cydLastDrawnScreen = cydScreen;
   }
+  tft.fillRect(0, 36, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 36, CYD_COLOR_BG);
+  bool recentHit = cydLastDetectionMs && now - cydLastDetectionMs < 15000;
+
   switch (cydScreen) {
     case SCREEN_SCAN:
       if (fullRedraw) {
-        cydDrawHeader("CYD Flock-You");
-        tft.pushImage(CYD_TFT_USABLE_W - DEFLOCK_LOGO_W - 8, 52,
-                      DEFLOCK_LOGO_W, DEFLOCK_LOGO_H, DEFLOCK_LOGO);
+        cydDrawHeader("SCAN");
       }
-      tft.fillRect(8, 42, 130, 34, TFT_BLACK);
-      tft.setTextColor((cydLastDetectionMs && now - cydLastDetectionMs < 15000)
-                       ? TFT_RED : TFT_GREEN, TFT_BLACK);
-      tft.setTextSize(3);
-      tft.drawString((cydLastDetectionMs && now - cydLastDetectionMs < 15000)
-                     ? "HIT" : "SCAN", 8, 44);
-      tft.setTextSize(2);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.fillRect(8, 84, 130, 104, TFT_BLACK);
-      tft.drawString("Ch", 8, 86);
-      tft.drawNumber(currentChannel, 56, 86);
-      tft.drawString("Hits", 8, 112);
-      tft.drawNumber(fyDetCount, 72, 112);
-      tft.drawString("GPS", 8, 138);
-      tft.setTextColor(cydGpsFresh() ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
-      tft.drawString(cydGpsFresh() ? "fix" : "wait", 72, 138);
-      tft.setTextColor(cydSdReady ? TFT_GREEN : TFT_RED, TFT_BLACK);
-      tft.drawString(cydSdReady ? "SD ok" : "SD miss", 8, 164);
+      cydDrawPanel(8, 44, 202, 54);
+      tft.setTextSize(1);
+      tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+      tft.drawString("RF STATUS", 18, 52);
+      tft.setTextSize(4);
+      tft.setTextColor(recentHit ? CYD_COLOR_RED : CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+      tft.drawString(recentHit ? "HIT" : "SCAN", 18, 66);
+      cydDrawFlockFreeMark(226, 48, 78, 42);
+
+      cydDrawMetricNumberBox(8, 110, 72, 44, "CH", currentChannel, CYD_COLOR_TEXT);
+      cydDrawMetricNumberBox(88, 110, 104, 44, "HITS", fyDetCount, recentHit ? CYD_COLOR_RED : CYD_COLOR_TEXT);
+      cydDrawMetricBox(200, 110, 112, 44, "GPS", cydGpsFresh() ? "FIX" : "WAIT", cydBoolColor(cydGpsFresh()));
+      cydDrawMetricBox(8, 162, 104, 36, "SD", cydSdReady ? "OK" : "MISS", cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_RED);
+      cydDrawMetricBox(120, 162, 192, 36, "MODE", channelModeName(), CYD_COLOR_TEXT);
       cydDrawDashboardFooter(now);
       break;
 
     case SCREEN_GPS:
       if (fullRedraw) cydDrawHeader("Phone GPS");
-      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
+      cydDrawMetricBox(8, 44, 304, 42, "PHONE GPS",
+                       cydGpsFresh() ? "FRESH FIX" : "NO FIX",
+                       cydBoolColor(cydGpsFresh()));
+
+      cydDrawPanel(8, 94, 146, 44);
+      tft.setTextSize(1);
+      tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+      tft.drawString("LAT", 16, 100);
       tft.setTextSize(2);
-      tft.setTextColor(cydGpsFresh() ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
-      tft.drawString(cydGpsFresh() ? "Fresh fix" : "No fresh fix", 8, 48);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString("Lat", 8, 86);
-      tft.drawFloat(cydGps.lat, 6, 80, 86);
-      tft.drawString("Lon", 8, 116);
-      tft.drawFloat(cydGps.lng, 6, 80, 116);
-      tft.drawString("Acc", 8, 146);
-      tft.drawFloat(cydGps.accuracyM, 1, 80, 146);
-      tft.drawString("m", 170, 146);
-      tft.drawString("Age", 8, 176);
-      tft.drawNumber(cydGps.hasFix ? (int)((now - cydGps.lastFixMs) / 1000) : -1, 80, 176);
-      tft.drawString("s", 126, 176);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_SURFACE);
+      tft.drawFloat(cydGps.lat, 5, 16, 114);
+
+      cydDrawPanel(166, 94, 146, 44);
+      tft.setTextSize(1);
+      tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+      tft.drawString("LON", 174, 100);
+      tft.setTextSize(2);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_SURFACE);
+      tft.drawFloat(cydGps.lng, 5, 174, 114);
+
+      cydDrawPanel(8, 150, 146, 44);
+      tft.setTextSize(1);
+      tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
+      tft.drawString("ACCURACY", 16, 156);
+      tft.setTextSize(2);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_SURFACE);
+      tft.drawFloat(cydGps.accuracyM, 1, 16, 170);
+      tft.drawString("m", 82, 170);
+
+      cydDrawMetricNumberBox(166, 150, 146, 44, "AGE SEC",
+                             cydGps.hasFix ? (unsigned long)((now - cydGps.lastFixMs) / 1000) : 0,
+                             cydGpsFresh() ? CYD_COLOR_GREEN : CYD_COLOR_AMBER);
       break;
 
     case SCREEN_LOG:
       if (fullRedraw) cydDrawHeader("CSV Log");
-      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
-      tft.setTextSize(2);
-      tft.setTextColor(cydSdReady ? TFT_GREEN : TFT_RED, TFT_BLACK);
-      tft.drawString(cydSdReady ? "SD mounted" : "SD unavailable", 8, 48);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString(CYD_LOG_FILE, 8, 84);
-      tft.drawString("Rows", 8, 126);
-      tft.drawNumber(cydCsvRows, 78, 126);
-      tft.drawString("Failures", 8, 156);
-      tft.drawNumber(cydSdFailures, 118, 156);
+      cydDrawMetricBox(8, 44, 304, 42, "CARD", cydSdReady ? "SD MOUNTED" : "SD UNAVAILABLE",
+                       cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_RED);
+      cydDrawMetricBox(8, 98, 304, 42, "FILE", CYD_LOG_FILE, CYD_COLOR_TEXT);
+      cydDrawMetricNumberBox(8, 152, 146, 44, "ROWS", cydCsvRows, CYD_COLOR_TEXT);
+      cydDrawMetricNumberBox(166, 152, 146, 44, "FAILURES", cydSdFailures,
+                             cydSdFailures ? CYD_COLOR_RED : CYD_COLOR_GREEN);
       break;
 
     case SCREEN_LAST:
       if (fullRedraw) cydDrawHeader("Last Detection");
-      tft.fillRect(0, 42, CYD_TFT_USABLE_W, CYD_TFT_USABLE_H - 42, TFT_BLACK);
-      tft.setTextSize(2);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString(cydLastMac[0] ? cydLastMac : "none yet", 8, 48);
-      tft.drawString("Method", 8, 86);
-      tft.drawString(cydLastMethod, 102, 86);
-      tft.drawString("RSSI", 8, 116);
-      tft.drawNumber(cydLastRssi, 78, 116);
-      tft.drawString("Ch", 8, 146);
-      tft.drawNumber(cydLastChannel, 78, 146);
-      tft.drawString("Hits", 8, 176);
-      tft.drawNumber(cydLastCount, 78, 176);
+      cydDrawMetricBox(8, 44, 304, 42, "DEVICE", cydLastMac[0] ? cydLastMac : "NONE YET",
+                       cydLastMac[0] ? CYD_COLOR_TEXT : CYD_COLOR_MUTED);
+      cydDrawMetricBox(8, 98, 304, 42, "METHOD", cydLastMethod[0] ? cydLastMethod : "-",
+                       CYD_COLOR_TEXT);
+      cydDrawMetricSignedBox(8, 152, 72, 40, "RSSI", (long)cydLastRssi, CYD_COLOR_TEXT);
+      cydDrawMetricNumberBox(88, 152, 72, 40, "CH", cydLastChannel, CYD_COLOR_TEXT);
+      cydDrawMetricNumberBox(168, 152, 72, 40, "HITS", cydLastCount, CYD_COLOR_RED);
+      cydDrawMetricBox(248, 152, 64, 40, "BT", cydBleClientConnected ? "OK" : "WAIT",
+                       cydBoolColor(cydBleClientConnected));
       tft.setTextSize(1);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.drawString("BT", 8, 210);
-      tft.setTextColor(cydBleClientConnected ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
-      tft.drawString(cydBleClientConnected ? "connected" : "waiting", 36, 210);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_BG);
       cydFormatClock(timeBuf, sizeof(timeBuf), now);
-      tft.drawString("Time", 132, 210);
-      tft.drawString(timeBuf, 174, 210);
-      tft.drawString("Loc", 8, 234);
+      tft.drawString("TIME", 8, 205);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_BG);
+      tft.drawString(timeBuf, 50, 205);
+      tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_BG);
+      tft.drawString("LOC", 8, 222);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_BG);
       if (cydLastLocationValid) {
-        tft.drawFloat(cydLastLat, 5, 42, 234);
-        tft.drawString(",", 104, 234);
-        tft.drawFloat(cydLastLng, 5, 116, 234);
+        tft.drawFloat(cydLastLat, 5, 42, 222);
+        tft.drawString(",", 104, 222);
+        tft.drawFloat(cydLastLng, 5, 116, 222);
       } else {
-        tft.drawString("none captured", 42, 234);
+        tft.drawString("none captured", 42, 222);
       }
       break;
 
