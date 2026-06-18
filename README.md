@@ -2,7 +2,7 @@
 
 Cheap Yellow Display firmware for passive, human-reviewed Flock Safety / ALPR camera discovery. Pairs with [FlockFree Navigation](https://github.com/yetisoldier/FlockFree-Navigation) for the full mobile integration.
 
-![CYD Hardware](flock.png)
+![CYD Hardware](docs/cyd-photo.jpg)
 
 ## What It Does
 
