@@ -1,6 +1,6 @@
 # CYD Flock-You Current State
 
-Last updated: 2026-06-18 11:05 CDT
+Last updated: 2026-06-18 18:29 CDT
 
 This note captures the working state of the CYD Flock-You firmware and its DeFlock Android companion path so the project can be resumed without reconstructing the whole field session.
 
@@ -22,14 +22,15 @@ Important firmware assumptions:
 - TFT driver: `ILI9341_2_DRIVER`
 - TFT base dimensions: `TFT_WIDTH=240`, `TFT_HEIGHT=320`
 - Runtime rotation: `CYD_TFT_ROTATION=1`
-- Logical UI canvas: `320x240`
-- TFT inversion: `TFT_INVERSION_ON` plus `tft.invertDisplay(true)`
+- Logical UI canvas: dynamic `320x240` landscape or `240x320` portrait
+- TFT inversion: configured through TFT_eSPI build flags
 - SPI bus: HSPI
+- XPT2046 touch bus: CLK GPIO 25, MOSI GPIO 32, MISO GPIO 39, CS GPIO 33, IRQ GPIO 36
 - Backlight: GPIO 21
 - SD card CS: GPIO 5
 - Red LED feedback: GPIO 4, active low
 - Piezo buzzer: GPIO 26
-- Screen cycle button: GPIO 0
+- Boot button: GPIO 0, rotates screen orientation
 
 Current field setup powers the CYD separately. The Moto test phone did not reliably enumerate or power the CYD over USB OTG, so Bluetooth LE UART is the primary app transport.
 
@@ -44,8 +45,10 @@ The `cyd` target currently includes:
 - Lock-free alert queue from Wi-Fi callback into the main loop.
 - SPIFFS session persistence for the in-memory detection table.
 - SD CSV append logging to `/flock.csv`.
-- FlockFree-styled TFT status UI with a dark navy/cyan/red field dashboard and FF badge.
-- Button-driven screen cycle: scan, GPS, CSV log, last detection.
+- FlockFree-styled TFT status UI with a dark navy/cyan/blue field dashboard and FF badge.
+- Portrait-aware screen layouts for scan, GPS, CSV log, and last detection.
+- Touchscreen tap cycles screens: scan, GPS, CSV log, last detection.
+- Boot button press rotates screen orientation through landscape, portrait, landscape reversed, and portrait reversed.
 - Visual hit state: `SCAN` changes to `HIT` for 15 seconds.
 - Buzzer chirps and red LED flash on hits.
 - Bluetooth LE UART using Nordic UART UUIDs.
@@ -87,9 +90,12 @@ FYSTATUS
 FYGPS,<lat>,<lon>,<accuracy_m>,<speed_kmph>,<course_deg>,<sats>,<hdop>,<unix_time>,<utc_offset_min>
 FYSIM
 FYSCREEN,next
+FYTOUCH
 ```
 
 The older 7-field `FYGPS` format is still accepted, but the Android branch now sends epoch seconds and UTC offset so the CYD can show local time.
+
+`FYSCREEN,next` cycles the display screen over serial. `FYTOUCH` reports raw XPT2046 touch diagnostics.
 
 ## Android Companion State
 

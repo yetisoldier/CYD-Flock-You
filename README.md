@@ -41,7 +41,7 @@ The phone app (FlockFree Navigation) receives the detection, places a review mar
 | GPIO 2 | TFT DC |
 | GPIO 21 | TFT backlight |
 | GPIO 26 | Piezo buzzer |
-| GPIO 0 | Screen cycle button |
+| GPIO 0 | Boot button / display control |
 
 ## Installation
 
@@ -95,14 +95,25 @@ Type `FYHELLO` and press Enter. You should see a JSON response:
 
 ## Display
 
-The CYD TFT shows a FlockFree-styled UI with navy/cyan/red colors:
+The CYD TFT shows a FlockFree-styled UI with navy/cyan/blue colors and danger accents:
 
 - **Scan screen** — FF badge, current channel, hit count, GPS/SD/BLE status, local time
 - **GPS screen** — Latest GPS fix details (from phone)
 - **CSV Log screen** — SD card logging status and row count
 - **Last Detection screen** — Most recent detection details (method, MAC, RSSI, channel)
 
-Press the CYD boot button (GPIO 0) to cycle screens.
+### Display Controls
+
+The CYD touchscreen and boot button control the display:
+
+| Control | Action |
+|---------|--------|
+| Touchscreen tap | Cycle to the next display screen |
+| Boot button press (GPIO 0) | Rotate the screen orientation |
+
+The orientation cycles through landscape, portrait, landscape reversed, and portrait reversed. The firmware uses a portrait-aware layout, so the display content should stay inside the screen in both orientations.
+
+The standard ESP32-2432S028R touch controller is an XPT2046 wired on a separate SPI bus from the TFT. This firmware reads it directly on GPIO 25/32/39/33 with IRQ on GPIO 36.
 
 ## Usage
 
@@ -115,7 +126,7 @@ Press the CYD boot button (GPIO 0) to cycle screens.
 5. Open FlockFree → Menu → Plugins → FlockFree → Settings
 6. Enable **CYD BLE hardware**
 7. FlockFree scans and connects to `CYD-Flock-You` automatically
-8. The CYD display should show `BLE: connected` and `GPS: true` once the phone sends GPS
+8. The CYD display should show `BT OK` and `GPS OK` once the phone connects and sends a fresh GPS fix
 
 ### During a Drive
 
@@ -148,6 +159,9 @@ Press the CYD boot button (GPIO 0) to cycle screens.
 | `FYGPS,lat,lon,acc,speed,course,sats,hdop,unix_time,offset` | Phone GPS input |
 | `FYSIM` | Simulate a detection for testing |
 | `FYSCREEN,next` | Cycle to next display screen |
+| `FYTOUCH` | Report raw touch diagnostic values |
+
+Screen rotation is handled by the physical boot button. There is no serial rotation command yet.
 
 ## Bluetooth Protocol
 
