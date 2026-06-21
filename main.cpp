@@ -49,6 +49,20 @@ static uint16_t cydScreenH = CYD_TFT_H;
 #define CYD_BLE_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CYD_BLE_CHUNK_BYTES   20
 
+// ── BLE Flock Battery Detection ──────────────────────────────
+// Flock Safety cameras with external batteries use Bluetooth to relay
+// battery health data to the camera. The BLE advertising signatures are:
+//   - Device name: "Penguin-NNNNNNNNNN" (10 digits) [older firmware]
+//   - Device name: "NNNNNNNNNN" (10 digits) [post March 2025 firmware]
+//   - Device name: "FS Ext Battery"
+//   - Manufacturer Specific advertising data with Company ID 0x09C8 (XUNTONG)
+// Research: Ryan O'Horo (ryanohoro.com) + ESP32 Marauder (justcallmekoko)
+#define CYD_BLE_FLOCK_SCAN_INTERVAL_MS  20000   // scan every 20s
+#define CYD_BLE_FLOCK_SCAN_DURATION_MS  5000    // scan for 5s
+#define CYD_BLE_FLOCK_RSSI_MIN          -100
+#define CYD_BLE_FLOCK_MAX_DETECTIONS    50
+#define XUNTONG_COMPANY_ID             0x09C8
+
 // RGB565 approximations of the FlockFree app palette.
 #define CYD_COLOR_BG          0x0004
 #define CYD_COLOR_NAVY        0x0043
@@ -358,6 +372,23 @@ static char cydBleRxQueue[CYD_BLE_RX_QUEUE_SIZE][CYD_BLE_RX_LINE_SIZE];
 static volatile uint8_t cydBleRxHead = 0;
 static volatile uint8_t cydBleRxTail = 0;
 static portMUX_TYPE cydBleRxMux = portMUX_INITIALIZER_UNLOCKED;
+
+// BLE Flock battery detection state
+typedef struct {
+  char     mac[18];
+  char     name[32];
+  int8_t   rssi;
+  uint32_t firstSeen;
+  uint32_t lastSeen;
+  uint16_t count;
+  bool     isXuntong;
+} BleFlockDetection;
+
+static BleFlockDetection bleFlockDetections[CYD_BLE_FLOCK_MAX_DETECTIONS];
+static int bleFlockDetCount = 0;
+static unsigned long bleFlockLastScanMs = 0;
+static bool bleFlockScanning = false;
+static unsigned long bleFlockScanStartMs = 0;
 static void cydBleWriteBytes(const uint8_t* data, size_t len);
 static void cydSetDisplayRotation(uint8_t rotation, bool redraw);
 #endif
@@ -1041,6 +1072,7 @@ static void cydEmitPairStatus() {
       "\"sd\":%s,"
       "\"detections\":%d,"
       "\"csv_rows\":%lu,"
+      "\"ble_detections\":%d,"
       "\"scan_mode\":\"%s\","
       "\"channel\":%u,"
       "\"rx_frames\":%lu,"
@@ -1053,6 +1085,7 @@ static void cydEmitPairStatus() {
       cydSdReady ? "true" : "false",
       fyDetCount,
       (unsigned long)cydCsvRows,
+      bleFlockDetCount,
       channelModeName(),
       (unsigned)currentChannel,
       (unsigned long)wifiRxFrames,
@@ -1708,6 +1741,213 @@ static void cydSerialTick() {
   }
 }
 
+
+// ============================================================
+// BLE FLOCK BATTERY DETECTION
+// ============================================================
+
+class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) override {
+    int rssi = advertisedDevice.getRSSI();
+    if (rssi < CYD_BLE_FLOCK_RSSI_MIN) return;
+
+    std::string name = advertisedDevice.getName();
+    std::string addr = advertisedDevice.getAddress().toString();
+    bool isFlock = false;
+    bool isXuntong = false;
+
+    // Check device name patterns
+    if (!name.empty()) {
+      // "Penguin-NNNNNNNNNN" (10 digits)
+      if (name.length() == 18 && strncmp(name.c_str(), "Penguin-", 8) == 0) {
+        bool allDigits = true;
+        for (size_t i = 8; i < 18; i++) {
+          if (name[i] < '0' || name[i] > '9') { allDigits = false; break; }
+        }
+        if (allDigits) isFlock = true;
+      }
+      // "FS Ext Battery"
+      else if (name == "FS Ext Battery") {
+        isFlock = true;
+      }
+      // Pure 10-digit name (post March 2025 Penguin firmware update)
+      else if (name.length() == 10) {
+        bool allDigits = true;
+        for (size_t i = 0; i < 10; i++) {
+          if (name[i] < '0' || name[i] > '9') { allDigits = false; break; }
+        }
+        if (allDigits) isFlock = true;
+      }
+    }
+
+    // Check for XUNTONG manufacturer specific data (Company ID 0x09C8)
+    if (advertisedDevice.haveManufacturerData()) {
+      std::string mdata = advertisedDevice.getManufacturerData();
+      if (mdata.length() >= 2) {
+        uint16_t companyId = (uint16_t)((uint8_t)mdata[0] | ((uint8_t)mdata[1] << 8));
+        if (companyId == XUNTONG_COMPANY_ID) {
+          isFlock = true;
+          isXuntong = true;
+        }
+      }
+    }
+
+    if (!isFlock) return;
+
+    // Match found — store it
+    char macStr[18];
+    strncpy(macStr, addr.c_str(), sizeof(macStr) - 1);
+    macStr[sizeof(macStr) - 1] = '\0';
+    for (char* p = macStr; *p; p++) *p = tolower((unsigned char)*p);
+
+    char nameStr[32];
+    strncpy(nameStr, name.c_str(), sizeof(nameStr) - 1);
+    nameStr[sizeof(nameStr) - 1] = '\0';
+
+    bool isNew = true;
+    bool chirpWorthy = true;
+    uint16_t hitCount = 1;
+    for (int i = 0; i < bleFlockDetCount; i++) {
+      if (strcasecmp(bleFlockDetections[i].mac, macStr) == 0) {
+        bool rediscover = (millis() - bleFlockDetections[i].lastSeen) > REDISCOVER_MS;
+        bleFlockDetections[i].lastSeen = millis();
+        bleFlockDetections[i].rssi = (int8_t)rssi;
+        if (bleFlockDetections[i].count < 0xFFFF) bleFlockDetections[i].count++;
+        hitCount = bleFlockDetections[i].count;
+        isNew = false;
+        chirpWorthy = rediscover;
+        break;
+      }
+    }
+    if (isNew && bleFlockDetCount < CYD_BLE_FLOCK_MAX_DETECTIONS) {
+      BleFlockDetection& d = bleFlockDetections[bleFlockDetCount];
+      strncpy(d.mac, macStr, sizeof(d.mac) - 1);
+      d.mac[sizeof(d.mac) - 1] = '\0';
+      strncpy(d.name, nameStr, sizeof(d.name) - 1);
+      d.name[sizeof(d.name) - 1] = '\0';
+      d.rssi = (int8_t)rssi;
+      d.firstSeen = millis();
+      d.lastSeen = millis();
+      d.count = 1;
+      d.isXuntong = isXuntong;
+      hitCount = d.count;
+      bleFlockDetCount++;
+    }
+
+    // Emit JSON detection
+    char oui[9] = "";
+    if (strlen(macStr) >= 8) { strncpy(oui, macStr, 8); oui[8] = '\0'; }
+
+    char bleGpsSuffix[180] = "";
+    if (cydGpsFresh()) {
+      snprintf(bleGpsSuffix, sizeof(bleGpsSuffix),
+               ",\"gps\":{\"latitude\":%.6f,\"longitude\":%.6f,\"accuracy\":%.1f,\"age_ms\":%lu,\"source\":\"%s\"}",
+               cydGps.lat, cydGps.lng, cydGps.accuracyM,
+               (unsigned long)(millis() - cydGps.lastFixMs), cydGps.source);
+    }
+
+    char nameEsc[sizeof(nameStr) * 6 + 1];
+    jsonEscape(nameEsc, sizeof(nameEsc), nameStr);
+
+    dualPrintf(
+        "{\"event\":\"detection\","
+        "\"detection_method\":\"ble_flock_battery\","
+        "\"protocol\":\"ble\","
+        "\"mac_address\":\"%s\","
+        "\"oui\":\"%s\","
+        "\"device_name\":\"%s\","
+        "\"rssi\":%d,"
+        "\"channel\":0,"
+        "\"frequency\":2400,"
+        "\"ssid\":\"\""
+        "%s"
+        "}\n",
+        macStr, oui, nameEsc, rssi, bleGpsSuffix);
+
+    // Log to SD card
+    if (cydSdReady) {
+      File f = SD.open(CYD_LOG_FILE, FILE_APPEND);
+      if (f) {
+        unsigned long now = millis();
+        long gpsAge = cydGps.hasFix ? (long)(now - cydGps.lastFixMs) : -1;
+        f.printf("%lu,%s,%s,ble_battery,%d,0,2400,", now, macStr, oui, rssi);
+        if (cydGps.hasFix) {
+          f.printf("%.6f,%.6f,%.1f,%ld,%.1f,%.1f,%u\n",
+                   cydGps.lat, cydGps.lng, cydGps.accuracyM, gpsAge,
+                   cydGps.speedKmph, cydGps.courseDeg, (unsigned)hitCount);
+        } else {
+          f.printf(",,,,,,%u\n", (unsigned)hitCount);
+        }
+        f.close();
+        cydCsvRows++;
+      }
+    }
+
+    // Update display
+    strlcpy(cydLastMac, macStr, sizeof(cydLastMac));
+    strlcpy(cydLastMethod, "ble_battery", sizeof(cydLastMethod));
+    cydLastRssi = rssi;
+    cydLastChannel = 0;
+    cydLastCount = hitCount;
+    cydLastDetectionMs = millis();
+    cydLastLocationValid = cydGpsFresh();
+    if (cydLastLocationValid) {
+      cydLastLat = cydGps.lat;
+      cydLastLng = cydGps.lng;
+    }
+
+    fyLastTargetSeen = millis();
+
+    if (chirpWorthy) {
+      newDetectChirp();
+      fyLastHeartbeatAt = millis();
+    }
+    ledFlash(LED_FLASH_MS);
+
+    dualPrintf("[flockyou] BLE Flock detected: %s name=\"%s\" rssi=%d xuntong=%d\n",
+               macStr, nameStr, rssi, isXuntong ? 1 : 0);
+  }
+};
+
+static BLEScan* bleFlockScan = nullptr;
+
+static void cydBleFlockStartScan() {
+  if (bleFlockScanning) return;
+  bleFlockScan = BLEDevice::getScan();
+  static BleFlockAdvertisedCallbacks callbacks;
+  bleFlockScan->setAdvertisedDeviceCallbacks(&callbacks, false);
+  bleFlockScan->setActiveScan(true);
+  bleFlockScan->setInterval(100);
+  bleFlockScan->setWindow(99);
+  bleFlockScan->start(0, nullptr, false);
+  bleFlockScanning = true;
+  bleFlockScanStartMs = millis();
+  dualPrintln("[flockyou] BLE Flock scan started");
+}
+
+static void cydBleFlockStopScan() {
+  if (!bleFlockScanning) return;
+  if (bleFlockScan) {
+    bleFlockScan->stop();
+  }
+  bleFlockScanning = false;
+  dualPrintf("[flockyou] BLE Flock scan done: %d detection(s)\n", bleFlockDetCount);
+}
+
+static void cydBleFlockTick() {
+  unsigned long now = millis();
+  if (!bleFlockScanning) {
+    if (now - bleFlockLastScanMs >= CYD_BLE_FLOCK_SCAN_INTERVAL_MS || bleFlockLastScanMs == 0) {
+      cydBleFlockStartScan();
+      bleFlockLastScanMs = now;
+    }
+  } else {
+    if (now - bleFlockScanStartMs >= CYD_BLE_FLOCK_SCAN_DURATION_MS) {
+      cydBleFlockStopScan();
+    }
+  }
+}
+
 static void cydInit() {
   cydInitDisplay();
   cydInitSd();
@@ -2084,6 +2324,7 @@ void setup() {
 
 #if CYD_BUILD
   cydInit();
+  bleFlockLastScanMs = 0;
 #endif
 
   // SPIFFS — format on first boot if missing. Non-fatal if it fails.
@@ -2130,6 +2371,7 @@ void loop() {
 #if CYD_BUILD
   cydSerialTick();
   cydBleDrainCommands();
+  cydBleFlockTick();
   cydButtonTick();
   cydTouchTick();
   cydDrawUi(false);
