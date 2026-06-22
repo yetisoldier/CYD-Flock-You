@@ -362,6 +362,11 @@ static double cydLastLng = 0;
 static unsigned long cydLastDetectionMs = 0;
 static unsigned long cydLastPairAnnounce = 0;
 
+// Full-screen Flock Found flash overlay
+#define CYD_FLASH_DURATION_MS 10000
+static unsigned long cydFlashStartMs = 0;
+static bool cydFlashActive = false;
+
 static BLECharacteristic* cydBleTx = nullptr;
 static bool cydBleReady = false;
 static volatile bool cydBleClientConnected = false;
@@ -1186,6 +1191,23 @@ static void cydDrawHeader(const char* title) {
 static void cydDrawUi(bool force = false) {
   if (!cydDisplayReady) return;
   unsigned long now = millis();
+
+  // ── Full-screen Flock Found flash overlay ──────────────────
+  if (cydFlashActive) {
+    if (now - cydFlashStartMs < CYD_FLASH_DURATION_MS) {
+      tft.fillScreen(CYD_COLOR_DANGER);
+      tft.setTextSize(3);
+      tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_DANGER);
+      tft.setTextDatum(MC_DATUM);
+      tft.drawString("FLOCK FOUND", cydScreenW / 2, cydScreenH / 2);
+      tft.setTextDatum(TL_DATUM);  // restore default
+      return;  // skip normal UI while flash is showing
+    } else {
+      cydFlashActive = false;
+      force = true;  // force full redraw of normal UI when flash ends
+    }
+  }
+
   if (!force && now - cydLastUiDraw < CYD_UI_REFRESH_MS) return;
   cydLastUiDraw = now;
   char timeBuf[8];
@@ -1510,6 +1532,8 @@ static void cydRecordDetection(const char* mac, const char* oui, const char* met
     cydLastLng = cydGps.lng;
   }
   cydLogDetectionCsv(mac, oui, method, rssi, ch, count);
+  cydFlashActive = true;
+  cydFlashStartMs = millis();
   cydDrawUi(true);
 }
 
@@ -1911,6 +1935,11 @@ class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
     }
 
     fyLastTargetSeen = millis();
+
+    // Trigger full-screen Flock Found flash
+    cydFlashActive = true;
+    cydFlashStartMs = millis();
+    cydDrawUi(true);
 
     if (chirpWorthy) {
       newDetectChirp();
