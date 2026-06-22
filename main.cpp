@@ -387,6 +387,7 @@ static bool cydFlashActive = false;
 static BLECharacteristic* cydBleTx = nullptr;
 static bool cydBleReady = false;
 static volatile bool cydBleClientConnected = false;
+static volatile bool cydBleConnectionChanged = false;
 
 #define CYD_BLE_RX_QUEUE_SIZE 8
 #define CYD_BLE_RX_LINE_SIZE 180
@@ -436,7 +437,7 @@ typedef struct __attribute__((packed)) {
 // ============================================================
 
 // Dual-output: prints to both Serial (USB) and Serial1 (GPIO43)
-static char _dualBuf[384];
+static char _dualBuf[1024];
 
 static void dualPrintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void dualPrintf(const char* fmt, ...) {
@@ -445,12 +446,16 @@ static void dualPrintf(const char* fmt, ...) {
   int n = vsnprintf(_dualBuf, sizeof(_dualBuf), fmt, args);
   va_end(args);
   if (n > 0) {
-    Serial.write(_dualBuf, n);
+    size_t written = (size_t)n;
+    if (written >= sizeof(_dualBuf)) {
+      written = sizeof(_dualBuf) - 1;
+    }
+    Serial.write(_dualBuf, written);
 #if MIRROR_SERIAL
-    Serial1.write(_dualBuf, n);
+    Serial1.write(_dualBuf, written);
 #endif
 #if CYD_BUILD
-    cydBleWriteBytes((const uint8_t*)_dualBuf, (size_t)n);
+    cydBleWriteBytes((const uint8_t*)_dualBuf, written);
 #endif
   }
 }
@@ -1106,6 +1111,7 @@ static void cydEmitPairStatus() {
       "\"device\":\"%s\","
       "\"protocol_version\":%u,"
       "\"features\":[\"wifi_promisc\",\"phone_gps\",\"sd_csv\",\"tft_status\",\"ble_uart\"],"
+      "\"ble_connected\":%s,"
       "\"gps\":%s,"
       "\"sd\":%s,"
       "\"detections\":%d,"
@@ -1120,6 +1126,7 @@ static void cydEmitPairStatus() {
       "\"method_counts\":{\"oui_addr2\":%lu,\"oui_addr1\":%lu,\"oui_addr3\":%lu,\"ssid\":%lu,\"wildcard_probe\":%lu,\"hidden_ssid\":%lu,\"wildcard_probe_ie_sig\":%lu}}\n",
       CYD_PAIR_NAME,
       (unsigned)CYD_PROTOCOL_VERSION,
+      cydBleClientConnected ? "true" : "false",
       cydGpsFresh() ? "true" : "false",
       cydSdReady ? "true" : "false",
       fyDetCount,
@@ -1738,10 +1745,12 @@ class CydBleServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
     (void)server;
     cydBleClientConnected = true;
+    cydBleConnectionChanged = true;
   }
 
   void onDisconnect(BLEServer* server) override {
     cydBleClientConnected = false;
+    cydBleConnectionChanged = true;
     server->getAdvertising()->start();
   }
 };
@@ -2567,6 +2576,11 @@ void loop() {
   cydBleFlockTick();
   cydButtonTick();
   cydTouchTick();
+  if (cydBleConnectionChanged) {
+    cydBleConnectionChanged = false;
+    cydDrawUi(true);
+    cydEmitPairStatus();
+  }
   cydDrawUi(false);
 #endif
   updateChannelMode();
