@@ -1199,6 +1199,20 @@ static void cydDrawUi(bool force = false) {
   // so clearing the whole content area every second causes visible flicker.
   bool recentHit = cydLastDetectionMs && now - cydLastDetectionMs < 15000;
 
+  // BLE Flock scan status indicator for SCAN screen
+  char bleVal[12];
+  uint16_t bleCol;
+  if (bleFlockDetCount > 0) {
+    snprintf(bleVal, sizeof(bleVal), "%d", bleFlockDetCount);
+    bleCol = CYD_COLOR_BLUE;
+  } else if (bleFlockScanning) {
+    strlcpy(bleVal, "SCAN", sizeof(bleVal));
+    bleCol = CYD_COLOR_CYAN;
+  } else {
+    strlcpy(bleVal, "WAIT", sizeof(bleVal));
+    bleCol = CYD_COLOR_MUTED;
+  }
+
   switch (cydScreen) {
     case SCREEN_SCAN:
       if (fullRedraw) {
@@ -1218,8 +1232,9 @@ static void cydDrawUi(bool force = false) {
         cydDrawMetricNumberBox(8, 110, 72, 44, "CH", currentChannel, CYD_COLOR_TEXT);
         cydDrawMetricNumberBox(88, 110, 104, 44, "HITS", fyDetCount, recentHit ? CYD_COLOR_BLUE : CYD_COLOR_TEXT);
         cydDrawMetricBox(200, 110, 112, 44, "GPS", cydGpsFresh() ? "OK" : "WAIT", cydBoolColor(cydGpsFresh()));
-        cydDrawMetricBox(8, 162, 104, 36, "SD", cydSdReady ? "OK" : "MISS", cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_DANGER);
-        cydDrawMetricBox(120, 162, 192, 36, "MODE", channelModeName(), CYD_COLOR_TEXT);
+        cydDrawMetricBox(8, 162, 64, 36, "SD", cydSdReady ? "OK" : "MISS", cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_DANGER);
+        cydDrawMetricBox(80, 162, 116, 36, "BLE", bleVal, bleCol);
+        cydDrawMetricBox(204, 162, 108, 36, "MODE", channelModeName(), CYD_COLOR_TEXT);
       } else {
         // Portrait layout (240 wide)
         cydDrawPanel(8, 44, cydScreenW - 16, 54);
@@ -1234,8 +1249,9 @@ static void cydDrawUi(bool force = false) {
         cydDrawMetricNumberBox(8, 110, pw, 44, "CH", currentChannel, CYD_COLOR_TEXT);
         cydDrawMetricNumberBox(8 + pw + 8, 110, pw, 44, "HITS", fyDetCount, recentHit ? CYD_COLOR_BLUE : CYD_COLOR_TEXT);
         cydDrawMetricBox(8, 162, cydScreenW - 16, 36, "GPS", cydGpsFresh() ? "OK" : "WAIT", cydBoolColor(cydGpsFresh()));
-        cydDrawMetricBox(8, 206, pw, 36, "SD", cydSdReady ? "OK" : "MISS", cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_DANGER);
-        cydDrawMetricBox(8 + pw + 8, 206, pw, 36, "MODE", channelModeName(), CYD_COLOR_TEXT);
+        cydDrawMetricBox(8, 206, 68, 36, "SD", cydSdReady ? "OK" : "MISS", cydSdReady ? CYD_COLOR_GREEN : CYD_COLOR_DANGER);
+        cydDrawMetricBox(84, 206, 68, 36, "BLE", bleVal, bleCol);
+        cydDrawMetricBox(160, 206, 72, 36, "MODE", channelModeName(), CYD_COLOR_TEXT);
       }
       cydDrawDashboardFooter(now);
       break;
