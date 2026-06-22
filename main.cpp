@@ -1200,17 +1200,15 @@ static void cydDrawUi(bool force = false) {
   bool recentHit = cydLastDetectionMs && now - cydLastDetectionMs < 15000;
 
   // BLE Flock scan status indicator for SCAN screen
+  // BLE scan runs continuously (USB-powered) — no idle/wait state.
   char bleVal[12];
   uint16_t bleCol;
   if (bleFlockDetCount > 0) {
     snprintf(bleVal, sizeof(bleVal), "%d", bleFlockDetCount);
     bleCol = CYD_COLOR_BLUE;
-  } else if (bleFlockScanning) {
+  } else {
     strlcpy(bleVal, "SCAN", sizeof(bleVal));
     bleCol = CYD_COLOR_CYAN;
-  } else {
-    strlcpy(bleVal, "WAIT", sizeof(bleVal));
-    bleCol = CYD_COLOR_MUTED;
   }
 
   switch (cydScreen) {
@@ -1951,16 +1949,13 @@ static void cydBleFlockStopScan() {
 }
 
 static void cydBleFlockTick() {
-  unsigned long now = millis();
+  // Continuous BLE Flock scanning — USB-powered, so no duty-cycle tradeoff.
+  // BLE scan (advertising channels) and GATT connection to the phone
+  // (data channels) coexist without conflict on the ESP32 single radio.
+  // Simple watchdog: if scan somehow stopped, restart it immediately.
   if (!bleFlockScanning) {
-    if (now - bleFlockLastScanMs >= CYD_BLE_FLOCK_SCAN_INTERVAL_MS || bleFlockLastScanMs == 0) {
-      cydBleFlockStartScan();
-      bleFlockLastScanMs = now;
-    }
-  } else {
-    if (now - bleFlockScanStartMs >= CYD_BLE_FLOCK_SCAN_DURATION_MS) {
-      cydBleFlockStopScan();
-    }
+    cydBleFlockStartScan();
+    bleFlockLastScanMs = millis();
   }
 }
 
