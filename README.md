@@ -12,8 +12,11 @@ The CYD (Cheap Yellow Display / ESP32-2432S028R) passively monitors 2.4 GHz Wi-F
 2. Sends a JSON detection event over Bluetooth LE to the paired phone
 3. Updates the TFT display with hit details
 4. Chirps the buzzer and flashes the LED
+5. Flashes a full-screen red **FLOCK FOUND** alert (touch to dismiss)
 
 The phone app (FlockFree Navigation) receives the detection, places a review marker on the map, and lets you manually verify and submit it to OpenStreetMap. **Nothing uploads automatically.**
+
+The CYD also continuously scans for Flock-style BLE signatures, with a live status indicator on the scan screen.
 
 ## Repository Pair
 
