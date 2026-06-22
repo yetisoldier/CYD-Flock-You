@@ -1200,6 +1200,9 @@ static void cydDrawUi(bool force = false) {
       tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_DANGER);
       tft.setTextDatum(MC_DATUM);
       tft.drawString("FLOCK FOUND", cydScreenW / 2, cydScreenH / 2);
+      tft.setTextSize(1);
+      tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_DANGER);
+      tft.drawString("touch to dismiss", cydScreenW / 2, cydScreenH / 2 + 30);
       tft.setTextDatum(TL_DATUM);  // restore default
       return;  // skip normal UI while flash is showing
     } else {
@@ -1468,6 +1471,16 @@ static void cydTouchTick() {
   unsigned long now = millis();
   if (down && !cydLastTouchDown && now - cydLastTouchMs > CYD_ROTATION_DEBOUNCE_MS) {
     cydLastTouchMs = now;
+
+    // If flash overlay is active, any touch dismisses it immediately
+    if (cydFlashActive) {
+      cydFlashActive = false;
+      cydDrawUi(true);
+      dualPrintf("[cyd] touch -> flash dismissed\n");
+      cydLastTouchDown = down;
+      return;
+    }
+
     cydScreen = (CydScreen)(((uint8_t)cydScreen + 1) % SCREEN_COUNT);
     cydDrawUi(true);
     dualPrintf("[cyd] touch -> screen %u x=%u y=%u z=%u\n",
