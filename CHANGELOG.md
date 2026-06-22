@@ -2,6 +2,25 @@
 
 All notable changes to CYD-Flock-You firmware are documented here.
 
+## [v1.4.0] — 2026-06-22
+
+### Added
+- IE fingerprinting — strict ordered TLV walk of probe request Information Elements against known Flock Liteon vendor payload (`50:6f:9a:16:03:01:03`) and WPA vendor payload (`00:50:f2:08:00:00:00`). New `wildcard_probe_ie_sig` detection method (highest confidence).
+- Confidence scoring — every JSON detection now includes `"confidence":"high|medium|low"` based on detection method ranking: `wildcard_probe_ie_sig` > `wildcard_probe` > `ssid` > `oui_addr2` > `oui_addr1` > `hidden_ssid`
+- Per-method hit counters in `pair_status` JSON — `method_counts` object with counts for all 7 detection methods
+- LAA OUI allowlist — `82:6b:f2` (DeFlockJoplin field-confirmed, locally-administered prefix) now functional via explicit allowlist exception in `matchOuiRaw()`
+- New OUI `b4:1e:52` — Flock Safety's own IEEE-registered OUI (was missing)
+- New OUI `e0:0a:f6` — Liteon Technology prefix (from upstream issue #28 / PR #29)
+
+### Changed
+- Channel hop order reversed to descending (11→1) — matches observed Flock camera ascending hop pattern for better intercept probability (credit: nsm_barri via DeFlockJoplin)
+- Channel dwell reduced from 400ms to 250ms — 2× the observed 125ms Flock camera hop rate
+- OUI list expanded from 31 to 33 prefixes
+- `matchOuiRaw()` now checks LAA allowlist before rejecting locally-administered MACs
+
+### Research
+- Best-practices audit conducted by Scout agent covering ESP32 promiscuous mode, Flock Wi-Fi fingerprinting, OUI detection, channel strategy, RSSI thresholds, active vs passive detection, and alternative hardware. Full report in `research/cyd-wifi-scanning-best-practices.md`.
+
 ## [v1.3.0] — 2026-06-22
 
 ### Added

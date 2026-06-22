@@ -185,7 +185,7 @@ Screen rotation is handled by the physical boot button. There is no serial rotat
 ```json
 {
   "event": "detection",
-  "detection_method": "wifi_wildcard_probe",
+  "detection_method": "wifi_wildcard_probe_ie_sig",
   "protocol": "wifi_2_4ghz",
   "mac_address": "70:c9:4e:aa:bb:cc",
   "oui": "70:c9:4e",
@@ -193,6 +193,7 @@ Screen rotation is handled by the physical boot button. There is no serial rotat
   "channel": 6,
   "frequency": 2437,
   "ssid": "",
+  "confidence": "high",
   "gps": {
     "latitude": 45.171234,
     "longitude": -93.225678,
@@ -215,16 +216,23 @@ millis,mac,oui,method,rssi,channel,frequency_mhz,lat,lon,accuracy_m,gps_age_ms,s
 
 ## Detection Methods
 
-| Method | Description |
-|--------|-------------|
-| `wifi_wildcard_probe` | Probe request with wildcard SSID from a known OUI |
-| `wifi_oui_addr2` | Transmitter address OUI match |
-| `wifi_oui_addr1` | Receiver-side OUI match (quiet/sleeping infrastructure) |
-| `wifi_oui_addr3` | BSSID OUI match (disabled by default) |
-| `wifi_ssid` | SSID keyword match (flock, flck, test_flck) |
-| `wifi_hidden_ssid` | Hidden beacon/probe-response from a known OUI |
+| Method | Confidence | Description |
+|--------|------------|-------------|
+| `wifi_wildcard_probe_ie_sig` | High | Probe request with wildcard SSID + full IE fingerprint match (ordered TLVs + vendor tags) |
+| `wifi_wildcard_probe` | High | Probe request with wildcard SSID from a known OUI |
+| `wifi_ssid` | Medium | SSID keyword match (flock, flck, test_flck) |
+| `wifi_oui_addr2` | Medium | Transmitter address OUI match |
+| `wifi_oui_addr1` | Low | Receiver-side OUI match (quiet/sleeping infrastructure) |
+| `wifi_hidden_ssid` | Low | Hidden beacon/probe-response from a known OUI |
+| `wifi_oui_addr3` | Low | BSSID OUI match (disabled by default) |
 
-Target OUI list: see [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md)
+Target OUI list: 33 prefixes — see [`datasets/NitekryDPaul_wifi_ouis.md`](datasets/NitekryDPaul_wifi_ouis.md)
+
+### Channel Scanning
+
+- **Full hop:** channels 11→1 (descending), 250ms dwell per channel
+- Descending order matches observed Flock camera ascending hop pattern for better intercept probability
+- 250ms dwell is 2× the observed 125ms Flock camera hop rate
 
 ## Forks and Credits
 
