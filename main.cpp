@@ -110,17 +110,17 @@ static uint16_t cydScreenH = CYD_TFT_H;
 
 #if CYD_BUILD
 #define CHANNEL_MODE CHANNEL_MODE_FULL_HOP
-#define CHANNEL_DWELL_MS 400
+#define CHANNEL_DWELL_MS 250
 #else
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
-#define CHANNEL_DWELL_MS 350
+#define CHANNEL_DWELL_MS 250
 #endif
 #define SINGLE_CHANNEL 1
 
-static const uint8_t customChannels[]  = {1, 6, 11};
+static const uint8_t customChannels[]  = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
 
-static const uint8_t fullHopChannels[] = {1,2,3,4,5,6,7,8,9,10,11};
+static const uint8_t fullHopChannels[] = {11,10,9,8,7,6,5,4,3,2,1};
 static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(fullHopChannels[0]);
 
 #define HEARTBEAT_MS    30000
@@ -177,9 +177,22 @@ static const char* target_ouis[] = {
   // Contributed by Michael / DeFlockJoplin — discovered via wildcard-probe
   // + OUI signature during field testing. The 12th camera in his drive-test
   // used this prefix and wasn't in @NitekryDPaul's original 30.
-  "82:6b:f2"
-
+  "82:6b:f2",
+  // Flock Safety direct OUI — IEEE registered to Flock Safety Inc.
+  // Source: IEEE OUI registry, upstream issue #28 / PR #29
+  "b4:1e:52",
+  // Liteon Technology — reported in upstream issue #28 / PR #29
+  "e0:0a:f6"
 };
+// Locally-administered OUI prefixes that we explicitly allowlist.
+// These bypass the LAA bit guard in matchOuiRaw() because they are
+// known Flock camera signatures even though they use randomised MAC space.
+static const char* target_ouis_laa[] = {
+  "82:6b:f2"   // DeFlockJoplin field-confirmed, LAA prefix
+};
+static const size_t OUI_LAA_COUNT = sizeof(target_ouis_laa) / sizeof(target_ouis_laa[0]);
+static uint8_t oui_laa_bytes[OUI_LAA_COUNT][3];
+
 static const size_t OUI_COUNT = sizeof(target_ouis) / sizeof(target_ouis[0]);
 
 // Pre-compiled byte table — populated once in setup(), never touched again.
@@ -202,7 +215,11 @@ typedef enum : uint8_t {
   //   https://github.com/DeflockJoplin/flock-you
   ALERT_WILDCARD_PROBE  = 4,
   ALERT_HIDDEN_SSID     = 5,
+  ALERT_WILDCARD_PROBE_IE_SIG = 6,  // OUI + wildcard SSID + full IE fingerprint
 } AlertType;
+
+// Per-method hit counters (indexed by AlertType)
+static uint32_t methodCounts[8] = {0};
 
 typedef struct {
   AlertType type;
@@ -398,7 +415,8 @@ static void cydBleWriteBytes(const uint8_t* data, size_t len);
 static void cydSetDisplayRotation(uint8_t rotation, bool redraw);
 #endif
 static void emitDetectionJSON(const char* mac, const char* method,
-                              int8_t rssi, uint8_t ch, const char* ssid);
+                              int8_t rssi, uint8_t ch, const char* ssid,
+                              const char* confidence = nullptr);
 
 // ============================================================
 // 802.11 HEADER
@@ -528,6 +546,12 @@ static void precompileOuis() {
     oui_bytes[i][1] = (uint8_t)strtol(o + 3, nullptr, 16);
     oui_bytes[i][2] = (uint8_t)strtol(o + 6, nullptr, 16);
   }
+  for (size_t i = 0; i < OUI_LAA_COUNT; i++) {
+    const char* o  = target_ouis_laa[i];
+    oui_laa_bytes[i][0] = (uint8_t)strtol(o,     nullptr, 16);
+    oui_laa_bytes[i][1] = (uint8_t)strtol(o + 3, nullptr, 16);
+    oui_laa_bytes[i][2] = (uint8_t)strtol(o + 6, nullptr, 16);
+  }
 }
 
 // Bit 0 of byte 0 set = multicast/broadcast — never a real device transmitter or receiver
@@ -538,8 +562,16 @@ static inline bool IRAM_ATTR isMulticast(const uint8_t* mac) {
 
 static bool IRAM_ATTR matchOuiRaw(const uint8_t* mac) {
   // Locally-administered (randomised) MACs have bit 1 of byte 0 set.
-  // Fixed infrastructure devices never use them — skip immediately.
-  if (mac[0] & 0x02) return false;
+  // Fixed infrastructure devices never use them — skip unless the prefix is
+  // explicitly in our LAA allowlist (e.g. 82:6b:f2 from DeFlockJoplin).
+  if (mac[0] & 0x02) {
+    for (size_t i = 0; i < OUI_LAA_COUNT; i++) {
+      if (mac[0] == oui_laa_bytes[i][0] &&
+          mac[1] == oui_laa_bytes[i][1] &&
+          mac[2] == oui_laa_bytes[i][2]) return true;
+    }
+    return false;
+  }
 
   for (size_t i = 0; i < OUI_COUNT; i++) {
     if (mac[0] == oui_bytes[i][0] &&
@@ -653,6 +685,7 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_OUI_ADDR3:      return "oui_addr3";
     case ALERT_SSID:           return "ssid";
     case ALERT_WILDCARD_PROBE: return "wildcard_probe";
+    case ALERT_WILDCARD_PROBE_IE_SIG: return "wildcard_probe_ie_sig";
     case ALERT_HIDDEN_SSID:    return "hidden_ssid";
     default:                   return "unknown";
   }
@@ -1083,7 +1116,8 @@ static void cydEmitPairStatus() {
       "\"rx_frames\":%lu,"
       "\"rx_mgmt\":%lu,"
       "\"rx_data\":%lu,"
-      "\"queue_drops\":%lu}\n",
+      "\"queue_drops\":%lu,"
+      "\"method_counts\":{\"oui_addr2\":%lu,\"oui_addr1\":%lu,\"oui_addr3\":%lu,\"ssid\":%lu,\"wildcard_probe\":%lu,\"hidden_ssid\":%lu,\"wildcard_probe_ie_sig\":%lu}}\n",
       CYD_PAIR_NAME,
       (unsigned)CYD_PROTOCOL_VERSION,
       cydGpsFresh() ? "true" : "false",
@@ -1096,7 +1130,14 @@ static void cydEmitPairStatus() {
       (unsigned long)wifiRxFrames,
       (unsigned long)wifiRxMgmtFrames,
       (unsigned long)wifiRxDataFrames,
-      (unsigned long)alertQueueDrops);
+      (unsigned long)alertQueueDrops,
+      (unsigned long)methodCounts[ALERT_OUI_ADDR2],
+      (unsigned long)methodCounts[ALERT_OUI_ADDR1],
+      (unsigned long)methodCounts[ALERT_OUI_ADDR3],
+      (unsigned long)methodCounts[ALERT_SSID],
+      (unsigned long)methodCounts[ALERT_WILDCARD_PROBE],
+      (unsigned long)methodCounts[ALERT_HIDDEN_SSID],
+      (unsigned long)methodCounts[ALERT_WILDCARD_PROBE_IE_SIG]);
 }
 
 static void cydInitTouch() {
@@ -2023,7 +2064,8 @@ static void cydInit() {
 // fix is present, detections include gps.* fields for the DeFlock fork.
 
 static void emitDetectionJSON(const char* mac, const char* method,
-                              int8_t rssi, uint8_t ch, const char* ssid) {
+                              int8_t rssi, uint8_t ch, const char* ssid,
+                              const char* confidence) {
   char ssidEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
   jsonEscape(ssidEsc, sizeof(ssidEsc), ssid ? ssid : "");
   char oui[9];
@@ -2053,12 +2095,14 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"channel\":%u,"
       "\"frequency\":%u,"
       "\"ssid\":\"%s\""
+      "\"confidence\":\"%s\""
 #if CYD_BUILD
       "%s"
 #endif
       "}\n",
       method, mac, oui, rssi,
-      (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc
+      (unsigned)ch, (unsigned)channelFreqMhz(ch), ssidEsc,
+      confidence ? confidence : "unknown"
 #if CYD_BUILD
       , gpsSuffix
 #endif
@@ -2104,6 +2148,91 @@ static int IRAM_ATTR isWildcardProbeIE(const uint8_t* body, int len) {
   return -1;
 }
 
+// --- IE fingerprint matcher (from colonelpanichacks PR #45) ---
+// Strict ordered walk of probe-request IE TLVs against the known Flock
+// primary probe IE sequence.  This is the highest-precision detection
+// signal: wildcard SSID + ordered Information Elements including vendor
+// tags that match Flock's Liteon and WPA vendor payloads.
+
+enum class FyIeExpect : uint8_t { TagOnly, VendorPayload };
+
+struct FyExpectedIe {
+  uint8_t        tag;
+  FyIeExpect     kind;
+  uint8_t        vendorLen;
+  const uint8_t* vendor;
+};
+
+static const uint8_t FLOCK_VENDOR_LITEON[] = {0x50, 0x6f, 0x9a, 0x16, 0x03, 0x01, 0x03};
+static const uint8_t FLOCK_VENDOR_WPA[]    = {0x00, 0x50, 0xf2, 0x08, 0x00, 0x00, 0x00};
+
+static const FyExpectedIe FLOCK_PRIMARY_PROBE_IES[] = {
+  {0,   FyIeExpect::TagOnly,        0, nullptr},
+  {2,   FyIeExpect::TagOnly,        0, nullptr},
+  {12,  FyIeExpect::TagOnly,        0, nullptr},
+  {127, FyIeExpect::TagOnly,        0, nullptr},
+  {221, FyIeExpect::VendorPayload, 7, FLOCK_VENDOR_LITEON},
+  {45,  FyIeExpect::TagOnly,        0, nullptr},
+  {191, FyIeExpect::TagOnly,        0, nullptr},
+  {221, FyIeExpect::VendorPayload, 7, FLOCK_VENDOR_WPA},
+};
+
+static inline bool IRAM_ATTR tlvFits(int i, int elen, int len) {
+  return i + 2 + elen <= len;
+}
+
+static bool IRAM_ATTR matchPrimaryFlockProbeIes(const uint8_t* body, int len) {
+  if (!body || len < 2) return false;
+  int i = 0;
+  for (size_t n = 0; n < sizeof(FLOCK_PRIMARY_PROBE_IES) / sizeof(FLOCK_PRIMARY_PROBE_IES[0]); n++) {
+    const FyExpectedIe& exp = FLOCK_PRIMARY_PROBE_IES[n];
+    if (i + 2 > len) return false;
+    uint8_t id = body[i];
+    int elen = (int)body[i + 1];
+    if (!tlvFits(i, elen, len)) return false;
+
+    if (exp.tag == 0) {
+      if (id != 0 || elen != 0) return false;
+      i += 2;
+      continue;
+    }
+    if (exp.kind == FyIeExpect::TagOnly) {
+      if (id != exp.tag) return false;
+      i += 2 + elen;
+      continue;
+    }
+    if (id != exp.tag || elen != (int)exp.vendorLen) return false;
+    if (memcmp(body + i + 2, exp.vendor, exp.vendorLen) != 0) return false;
+    i += 2 + elen;
+  }
+  return i == len;
+}
+
+// Match primary signature; retry with 4-byte FCS stripped when sig_len includes trailer.
+static bool IRAM_ATTR probeBodyMatchesPrimary(const uint8_t* body, int bodyLen) {
+  if (!body || bodyLen < 2) return false;
+  if (matchPrimaryFlockProbeIes(body, bodyLen)) return true;
+  if (bodyLen > 4 && matchPrimaryFlockProbeIes(body, bodyLen - 4)) return true;
+  return false;
+}
+
+// --- Confidence scoring ---
+// Returns a string label for the detection confidence level.
+// Ranking: wildcard_probe_ie_sig > wildcard_probe > ssid > oui_addr2 > oui_addr1 > hidden_ssid
+static const char* alertConfidence(AlertType t) {
+  switch (t) {
+    case ALERT_WILDCARD_PROBE_IE_SIG: return "high";
+    case ALERT_WILDCARD_PROBE:        return "high";
+    case ALERT_SSID:                  return "medium";
+    case ALERT_OUI_ADDR2:             return "medium";
+    case ALERT_OUI_ADDR1:             return "low";
+    case ALERT_HIDDEN_SSID:           return "low";
+    case ALERT_OUI_ADDR3:             return "low";
+    default:                           return "unknown";
+  }
+}
+
+
 static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   if (!buf || sniffingStopped) return;
 
@@ -2140,13 +2269,15 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 
   // --- OUI check: addr2 (transmitter/source) ---
   //
-  // For mgmt Probe Requests (type=0 subtype=4) from a matched OUI, tighten
-  // to the DeFlockJoplin wildcard-probe signature: SSID IE (tag 0) length
-  // must be zero. This reduces false positives dramatically (Michael's field
-  // test: 11/12 true-positive with only 2 false-positives in Joplin).
+  // For mgmt Probe Requests (type=0 subtype=4) from a matched OUI:
+  //   1. Try strict IE fingerprint match (wildcard SSID + ordered IE TLVs)
+  //      → ALERT_WILDCARD_PROBE_IE_SIG (highest confidence)
+  //   2. Fall back to wildcard-SSID-only match (original DeFlockJoplin sig)
+  //      → ALERT_WILDCARD_PROBE (high confidence)
+  //   3. Non-probe frames from the same OUI → ALERT_OUI_ADDR2 (medium)
   //
-  // Non-probe frames from the same OUI still emit the broad ADDR2 alert.
-  // See: https://github.com/DeflockJoplin/flock-you
+  // For Beacons/Probe Responses from a matched OUI with hidden SSID:
+  //   → ALERT_HIDDEN_SSID (low)
   if (matchOuiRaw(hdr->addr2)) {
     bool emitted = false;
     if (isMgmt && ftype == 0) {
@@ -2154,15 +2285,20 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         int sigLen  = (int)pkt->rx_ctrl.sig_len;
         int bodyLen = sigLen - (int)sizeof(wifi_ieee80211_mac_hdr_t);
         const uint8_t* body = pkt->payload + sizeof(wifi_ieee80211_mac_hdr_t);
-        int r = (bodyLen > 0) ? isWildcardProbeIE(body, bodyLen) : -1;
-        // FCS-trailer retry: only when the first parse found no SSID IE AT
-        // ALL (-1). A found-but-nonzero (0) means legit directed probe; do
-        // not retry — it would mis-classify.
-        if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
-        if (r == 1) {
-          enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
+        // Try strict IE fingerprint first
+        if (probeBodyMatchesPrimary(body, bodyLen)) {
+          enqueueAlert(ALERT_WILDCARD_PROBE_IE_SIG, hdr->addr2, rssi, ch,
                        nullptr, "probe_req");
           emitted = true;
+        } else {
+          // Fall back to wildcard-SSID-only match
+          int r = (bodyLen > 0) ? isWildcardProbeIE(body, bodyLen) : -1;
+          if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
+          if (r == 1) {
+            enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
+                         nullptr, "probe_req");
+            emitted = true;
+          }
         }
       } else if (subtype == 8 || subtype == 5) {                // Beacon / Probe Response
         int sigLen = (int)pkt->rx_ctrl.sig_len;
@@ -2272,6 +2408,9 @@ static void drainAlertQueue() {
     // rate-limited (still audible via heartbeat, just quieter on the wire).
     fyLastTargetSeen = millis();
 
+    // Track per-method hit counts
+    if ((uint8_t)e.type < 8) methodCounts[(uint8_t)e.type]++;
+
     // Serial-rate-limit: suppress emit/beep/flash within ALERT_COOLDOWN_MS.
     if (shouldSuppressDuplicate(macStr)) continue;
 
@@ -2296,7 +2435,8 @@ static void drainAlertQueue() {
 
     // Flask-compatible JSON line (parsed by api/flockyou.py over USB CDC).
     emitDetectionJSON(macStr, method, e.rssi, e.channel,
-                      (e.type == ALERT_SSID) ? e.ssid : "");
+                      (e.type == ALERT_SSID) ? e.ssid : "",
+                      alertConfidence(e.type));
 
     // Audio feedback:
     //   - NEW MAC  → two fast ascending beeps (clearly distinct sound)
