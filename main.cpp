@@ -1272,16 +1272,23 @@ static void cydDrawUi(bool force = false) {
   // so clearing the whole content area every second causes visible flicker.
   bool recentHit = cydLastDetectionMs && now - cydLastDetectionMs < 15000;
 
-  // BLE Flock scan status indicator for SCAN screen
-  // BLE scan runs continuously (USB-powered) — no idle/wait state.
+  // BLE Flock scan status indicator for SCAN screen.
+  // Phone BLE UART is the priority path; battery-signature scanning pauses
+  // while the phone is connected and otherwise runs in short duty cycles.
   char bleVal[12];
   uint16_t bleCol;
   if (bleFlockDetCount > 0) {
     snprintf(bleVal, sizeof(bleVal), "%d", bleFlockDetCount);
     bleCol = CYD_COLOR_BLUE;
-  } else {
+  } else if (cydBleClientConnected) {
+    strlcpy(bleVal, "PAUSE", sizeof(bleVal));
+    bleCol = CYD_COLOR_AMBER;
+  } else if (bleFlockScanning) {
     strlcpy(bleVal, "SCAN", sizeof(bleVal));
     bleCol = CYD_COLOR_CYAN;
+  } else {
+    strlcpy(bleVal, "IDLE", sizeof(bleVal));
+    bleCol = CYD_COLOR_MUTED;
   }
 
   switch (cydScreen) {
@@ -2018,7 +2025,7 @@ class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
 static BLEScan* bleFlockScan = nullptr;
 
 static void cydBleFlockStartScan() {
-  if (bleFlockScanning) return;
+  if (bleFlockScanning || cydBleClientConnected) return;
   bleFlockScan = BLEDevice::getScan();
   static BleFlockAdvertisedCallbacks callbacks;
   bleFlockScan->setAdvertisedDeviceCallbacks(&callbacks, false);
@@ -2037,17 +2044,30 @@ static void cydBleFlockStopScan() {
     bleFlockScan->stop();
   }
   bleFlockScanning = false;
+  if (!cydBleClientConnected) {
+    BLEDevice::getAdvertising()->start();
+  }
   dualPrintf("[flockyou] BLE Flock scan done: %d detection(s)\n", bleFlockDetCount);
 }
 
 static void cydBleFlockTick() {
-  // Continuous BLE Flock scanning — USB-powered, so no duty-cycle tradeoff.
-  // BLE scan (advertising channels) and GATT connection to the phone
-  // (data channels) coexist without conflict on the ESP32 single radio.
-  // Simple watchdog: if scan somehow stopped, restart it immediately.
-  if (!bleFlockScanning) {
+  unsigned long now = millis();
+  if (cydBleClientConnected) {
+    if (bleFlockScanning) {
+      cydBleFlockStopScan();
+    }
+    bleFlockLastScanMs = now;
+    return;
+  }
+  if (bleFlockScanning) {
+    if (now - bleFlockScanStartMs >= CYD_BLE_FLOCK_SCAN_DURATION_MS) {
+      cydBleFlockStopScan();
+      bleFlockLastScanMs = now;
+    }
+    return;
+  }
+  if (bleFlockLastScanMs == 0 || now - bleFlockLastScanMs >= CYD_BLE_FLOCK_SCAN_INTERVAL_MS) {
     cydBleFlockStartScan();
-    bleFlockLastScanMs = millis();
   }
 }
 
