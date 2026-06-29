@@ -110,7 +110,7 @@ static uint16_t cydScreenH = CYD_TFT_H;
 
 #if CYD_BUILD
 #define CHANNEL_MODE CHANNEL_MODE_FULL_HOP
-#define CHANNEL_DWELL_MS 500
+#define CHANNEL_DWELL_MS 750
 #else
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
 #define CHANNEL_DWELL_MS 250
@@ -120,7 +120,10 @@ static uint16_t cydScreenH = CYD_TFT_H;
 static const uint8_t customChannels[]  = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
 
-static const uint8_t fullHopChannels[] = {11,10,9,8,7,6,5,4,3,2,1,12,13};
+// Flock channel-priority hop: hits the three non-overlapping 2.4 GHz
+// channels (1, 6, 11) first, then fills in the rest. Doubles interception
+// probability for cameras on common channels.
+static const uint8_t fullHopChannels[] = {11,6,1,10,5,2,9,4,3,8,7,12,13};
 static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(fullHopChannels[0]);
 
 #define HEARTBEAT_MS    30000
@@ -306,7 +309,7 @@ static volatile bool sniffingStopped = false;
 // This is the *serial-rate-limit* dedup — it suppresses beep + emit within
 // ALERT_COOLDOWN_MS of a prior hit on the same MAC. The detection table
 // (above) still counts every hit regardless of this suppression.
-#define DEDUPE_SLOTS 8
+#define DEDUPE_SLOTS 16
 static struct {
   char mac[18];
   unsigned long ts;
@@ -1877,12 +1880,30 @@ class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
         isFlock = true;
       }
       // Pure 10-digit name (post March 2025 Penguin firmware update)
+      // Cross-check against known Flock OUI prefixes to reduce false positives
+      // from other IoT devices with numeric names.
       else if (name.length() == 10) {
         bool allDigits = true;
         for (size_t i = 0; i < 10; i++) {
           if (name[i] < '0' || name[i] > '9') { allDigits = false; break; }
         }
-        if (allDigits) isFlock = true;
+        if (allDigits) {
+          // OUI cross-check: use Bluedroid's getNative() which returns esp_bd_addr_t*
+          esp_bd_addr_t* macNative = advertisedDevice.getAddress().getNative();
+          bool ouiMatch = false;
+          for (size_t i = 0; i < OUI_COUNT; i++) {
+            if ((*macNative)[0] == oui_bytes[i][0] &&
+                (*macNative)[1] == oui_bytes[i][1] &&
+                (*macNative)[2] == oui_bytes[i][2]) { ouiMatch = true; break; }
+          }
+          // Also check LAA prefixes
+          for (size_t i = 0; i < OUI_LAA_COUNT; i++) {
+            if ((*macNative)[0] == oui_laa_bytes[i][0] &&
+                (*macNative)[1] == oui_laa_bytes[i][1] &&
+                (*macNative)[2] == oui_laa_bytes[i][2]) { ouiMatch = true; break; }
+          }
+          if (ouiMatch) isFlock = true;
+        }
       }
     }
 
@@ -2030,6 +2051,8 @@ static void cydBleFlockStartScan() {
   bleFlockScan->setActiveScan(true);
   bleFlockScan->setInterval(100);
   bleFlockScan->setWindow(99);
+  // Note: Bluedroid BLEScan doesn't have setMaxResults() like NimBLE.
+  // Unlimited results is the default behavior in Bluedroid.
   bleFlockScan->start(0, nullptr, false);
   bleFlockScanning = true;
   bleFlockScanStartMs = millis();
