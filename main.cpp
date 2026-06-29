@@ -57,8 +57,8 @@ static uint16_t cydScreenH = CYD_TFT_H;
 //   - Device name: "FS Ext Battery"
 //   - Manufacturer Specific advertising data with Company ID 0x09C8 (XUNTONG)
 // Research: Ryan O'Horo (ryanohoro.com) + ESP32 Marauder (justcallmekoko)
-#define CYD_BLE_FLOCK_SCAN_INTERVAL_MS  20000   // scan every 20s
-#define CYD_BLE_FLOCK_SCAN_DURATION_MS  5000    // scan for 5s
+#define CYD_BLE_FLOCK_SCAN_INTERVAL_MS  15000   // scan every 15s
+#define CYD_BLE_FLOCK_SCAN_DURATION_MS  10000   // scan for 10s
 #define CYD_BLE_FLOCK_RSSI_MIN          -100
 #define CYD_BLE_FLOCK_MAX_DETECTIONS    50
 #define XUNTONG_COMPANY_ID             0x09C8
@@ -110,7 +110,7 @@ static uint16_t cydScreenH = CYD_TFT_H;
 
 #if CYD_BUILD
 #define CHANNEL_MODE CHANNEL_MODE_FULL_HOP
-#define CHANNEL_DWELL_MS 250
+#define CHANNEL_DWELL_MS 500
 #else
 #define CHANNEL_MODE CHANNEL_MODE_CUSTOM
 #define CHANNEL_DWELL_MS 250
@@ -120,11 +120,11 @@ static uint16_t cydScreenH = CYD_TFT_H;
 static const uint8_t customChannels[]  = {11, 6, 1};
 static const size_t  customChannelCount = sizeof(customChannels) / sizeof(customChannels[0]);
 
-static const uint8_t fullHopChannels[] = {11,10,9,8,7,6,5,4,3,2,1};
+static const uint8_t fullHopChannels[] = {11,10,9,8,7,6,5,4,3,2,1,12,13};
 static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(fullHopChannels[0]);
 
 #define HEARTBEAT_MS    30000
-#define RSSI_MIN        -95
+#define RSSI_MIN        -100
 #define ALERT_COOLDOWN_MS 5000
 
 // Audio cadence: two fast ascending beeps on a NEW MAC, then while any
@@ -1273,21 +1273,19 @@ static void cydDrawUi(bool force = false) {
   bool recentHit = cydLastDetectionMs && now - cydLastDetectionMs < 15000;
 
   // BLE Flock scan status indicator for SCAN screen.
-  // Phone BLE UART is the priority path; battery-signature scanning pauses
-  // while the phone is connected and otherwise runs in short duty cycles.
+  // BLE Flock scanning runs simultaneously with phone BLE UART — the ESP32
+  // Bluedroid stack supports both peripheral (server) and central (scanner)
+  // roles at the same time.
   char bleVal[12];
   uint16_t bleCol;
   if (bleFlockDetCount > 0) {
     snprintf(bleVal, sizeof(bleVal), "%d", bleFlockDetCount);
     bleCol = CYD_COLOR_BLUE;
-  } else if (cydBleClientConnected) {
-    strlcpy(bleVal, "PAUSE", sizeof(bleVal));
-    bleCol = CYD_COLOR_AMBER;
   } else if (bleFlockScanning) {
-    strlcpy(bleVal, "SCAN", sizeof(bleVal));
+    strlcpy(bleVal, cydBleClientConnected ? "BT+SCAN" : "SCAN", sizeof(bleVal));
     bleCol = CYD_COLOR_CYAN;
   } else {
-    strlcpy(bleVal, "IDLE", sizeof(bleVal));
+    strlcpy(bleVal, cydBleClientConnected ? "BT+IDLE" : "IDLE", sizeof(bleVal));
     bleCol = CYD_COLOR_MUTED;
   }
 
@@ -2025,7 +2023,7 @@ class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
 static BLEScan* bleFlockScan = nullptr;
 
 static void cydBleFlockStartScan() {
-  if (bleFlockScanning || cydBleClientConnected) return;
+  if (bleFlockScanning) return;
   bleFlockScan = BLEDevice::getScan();
   static BleFlockAdvertisedCallbacks callbacks;
   bleFlockScan->setAdvertisedDeviceCallbacks(&callbacks, false);
@@ -2044,21 +2042,15 @@ static void cydBleFlockStopScan() {
     bleFlockScan->stop();
   }
   bleFlockScanning = false;
-  if (!cydBleClientConnected) {
-    BLEDevice::getAdvertising()->start();
-  }
+  // Keep BLE advertising running for phone connection regardless of scan state
+  BLEDevice::getAdvertising()->start();
   dualPrintf("[flockyou] BLE Flock scan done: %d detection(s)\n", bleFlockDetCount);
 }
 
 static void cydBleFlockTick() {
   unsigned long now = millis();
-  if (cydBleClientConnected) {
-    if (bleFlockScanning) {
-      cydBleFlockStopScan();
-    }
-    bleFlockLastScanMs = now;
-    return;
-  }
+  // BLE Flock scanning runs regardless of phone BLE UART connection state.
+  // The ESP32 Bluedroid stack supports simultaneous peripheral + central roles.
   if (bleFlockScanning) {
     if (now - bleFlockScanStartMs >= CYD_BLE_FLOCK_SCAN_DURATION_MS) {
       cydBleFlockStopScan();
@@ -2559,8 +2551,35 @@ void setup() {
   }
 
   WiFi.mode(WIFI_MODE_NULL);
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  esp_wifi_init(&cfg);
+  // Optimized WiFi init config — disables AMPDU, CSI, and NVS to reduce
+  // overhead and free resources for promiscuous mode sniffing.
+  // Modeled after the ESP32 Marauder's cfg2.
+  static wifi_init_config_t fyWifiCfg = {
+    .event_handler = &esp_event_send_internal,
+    .osi_funcs = &g_wifi_osi_funcs,
+    .wpa_crypto_funcs = g_wifi_default_wpa_crypto_funcs,
+    .static_rx_buf_num = 6,
+    .dynamic_rx_buf_num = 6,
+    .tx_buf_type = 0,
+    .static_tx_buf_num = 1,
+    .dynamic_tx_buf_num = WIFI_DYNAMIC_TX_BUFFER_NUM,
+    .cache_tx_buf_num = 0,
+    .csi_enable = false,
+    .ampdu_rx_enable = false,
+    .ampdu_tx_enable = false,
+    .amsdu_tx_enable = false,
+    .nvs_enable = false,
+    .nano_enable = WIFI_NANO_FORMAT_ENABLED,
+    .rx_ba_win = 6,
+    .wifi_task_core_id = WIFI_TASK_CORE_ID,
+    .beacon_max_len = 752,
+    .mgmt_sbuf_num = 8,
+    .feature_caps = g_wifi_feature_caps,
+    .sta_disconnected_pm = WIFI_STA_DISCONNECTED_PM_ENABLED,
+    .espnow_max_encrypt_num = 0,
+    .magic = WIFI_INIT_CONFIG_MAGIC
+  };
+  esp_wifi_init(&fyWifiCfg);
   esp_wifi_set_storage(WIFI_STORAGE_RAM);
   esp_wifi_set_mode(WIFI_MODE_NULL);
   esp_wifi_start();

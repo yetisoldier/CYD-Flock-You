@@ -276,9 +276,13 @@ Target OUI list: 33 prefixes — see [`datasets/NitekryDPaul_wifi_ouis.md`](data
 
 ### Channel Scanning
 
-- **Full hop:** channels 11→1 (descending), 250ms dwell per channel
+- **Full hop:** channels 11→1→12→13 (descending 11–1, then 12–13), 500ms dwell per channel
 - Descending order matches observed Flock camera ascending hop pattern for better intercept probability
-- 250ms dwell is 2× the observed 125ms Flock camera hop rate
+- 500ms dwell provides better coverage of burst-sleep cameras (Marauder uses 1s dwell; 500ms is a balanced compromise)
+- Channels 12–13 added to cover all legal 2.4 GHz channels (14 is restricted in most regions)
+- RSSI threshold: -100 dBm (catches weak/distant cameras that would be missed at -95)
+- Optimized WiFi init config disables AMPDU, CSI, and NVS for leaner promiscuous mode operation
+- BLE Flock scanning runs simultaneously with phone BLE UART — no pausing when phone is connected
 
 ## Forks and Credits
 
