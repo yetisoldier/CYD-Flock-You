@@ -1046,10 +1046,10 @@ static void cydDrawMetricBox(int x, int y, int w, int h,
   cydDrawPanel(x, y, w, h);
   tft.setTextSize(1);
   tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
-  tft.drawString(label, x + 8, y + 6);
+  tft.drawString(label, x + 8, y + 4);
   tft.setTextSize(2);
   tft.setTextColor(valueColor, CYD_COLOR_SURFACE);
-  tft.drawString(value, x + 8, y + 20);
+  tft.drawString(value, x + 8, y + 16);
 }
 
 static void cydDrawMetricNumberBox(int x, int y, int w, int h,
@@ -1072,10 +1072,11 @@ static void cydDrawFlockFreeMark(int x, int y, int w, int h) {
   tft.fillRoundRect(x, y, w, h, 8, CYD_COLOR_NAVY);
   tft.drawRoundRect(x, y, w, h, 8, CYD_COLOR_CYAN);
   tft.drawFastHLine(x + 8, y + h - 9, w - 16, CYD_COLOR_BLUE);
-  tft.drawLine(x + w / 2 - 4, y + h - 11, x + w / 2 + 10, y + 7, CYD_COLOR_CYAN);
   tft.setTextSize(2);
   tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_NAVY);
-  tft.drawString("FF", x + 10, y + 8);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("FF", x + w / 2, y + h / 2);
+  tft.setTextDatum(TL_DATUM);
 }
 
 static void cydDrawDashboardFooter(unsigned long now) {
