@@ -51,7 +51,53 @@ The CYD also continuously scans for Flock-style BLE signatures, with a live stat
 
 ## Installation
 
-### 1. Install PlatformIO
+### Option A: Web Flasher (easiest — no software install)
+
+This is the fastest path if you just want to flash a pre-built firmware binary without installing any toolchain.
+
+#### 1. Download the firmware
+
+Grab `firmware.bin` from the [latest release](https://github.com/yetisoldier/CYD-Flock-You/releases).
+
+#### 2. Install USB drivers (if needed)
+
+Plug the CYD into your computer via USB. On Windows, it should appear as a COM port automatically. If it doesn't, install the appropriate USB-to-UART driver:
+
+- **CP210x** (Silicon Labs): [download here](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers)
+- **CH340** (WCH): [download here](https://www.wch-ic.com/downloads/CH341SER_EXE.html)
+
+On macOS and Linux, the driver is usually built in — no install needed.
+
+#### 3. Flash with a browser-based tool
+
+Open one of these in a Chromium-based browser (Chrome, Edge, Brave):
+
+- **[esptool-js](https://espressif.github.io/esptool-js/)** (Espressif official)
+- **[ESP Flasher](https://esp.huhn.me/)** (community tool)
+
+Steps:
+
+1. Click **Connect** and select the CYD's serial/COM port
+2. Set the upload address/offset to `0x10000`
+3. Select the `firmware.bin` file you downloaded
+4. Click **Flash** / **Program**
+5. Wait for the progress bar to finish — the CYD will reboot automatically
+
+#### 4. Verify
+
+Open a serial monitor at 115200 baud (Arduino IDE Serial Monitor, `pio device monitor`, or `screen /dev/ttyUSB0 115200`). Type `FYHELLO` and press Enter. You should see:
+
+```json
+{"event":"pair_status","device":"CYD-Flock-You","protocol_version":1,"features":["wifi_promisc","phone_gps","sd_csv","tft_status","ble_uart"],"gps":false,"sd":true,"detections":0,"csv_rows":0}
+```
+
+If the display lights up with the FlockFree scan screen, you're good to go.
+
+---
+
+### Option B: PlatformIO (build from source)
+
+#### 1. Install PlatformIO
 
 ```bash
 pip install platformio
