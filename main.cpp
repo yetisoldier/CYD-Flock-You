@@ -57,8 +57,8 @@ static uint16_t cydScreenH = CYD_TFT_H;
 //   - Device name: "FS Ext Battery"
 //   - Manufacturer Specific advertising data with Company ID 0x09C8 (XUNTONG)
 // Research: Ryan O'Horo (ryanohoro.com) + ESP32 Marauder (justcallmekoko)
-#define CYD_BLE_FLOCK_SCAN_INTERVAL_MS  15000   // scan every 15s
-#define CYD_BLE_FLOCK_SCAN_DURATION_MS  10000   // scan for 10s
+#define CYD_BLE_FLOCK_SCAN_INTERVAL_MS  16000   // scan every 16s (near-continuous)
+#define CYD_BLE_FLOCK_SCAN_DURATION_MS  15000   // scan for 15s (94% duty cycle, USB powered)
 #define CYD_BLE_FLOCK_RSSI_MIN          -100
 #define CYD_BLE_FLOCK_MAX_DETECTIONS    50
 #define XUNTONG_COMPANY_ID             0x09C8
@@ -1303,10 +1303,10 @@ static void cydDrawUi(bool force = false) {
         cydDrawPanel(8, 44, 202, 54);
         tft.setTextSize(1);
         tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
-        tft.drawString("RF STATUS", 18, 52);
+        tft.drawString("RF STATUS", 18, 50);
         tft.setTextSize(4);
         tft.setTextColor(recentHit ? CYD_COLOR_BLUE : CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
-        tft.drawString(recentHit ? "HIT" : "SCAN", 18, 66);
+        tft.drawString(recentHit ? "HIT" : "SCAN", 18, 62);
         cydDrawFlockFreeMark(226, 48, 78, 42);
 
         cydDrawMetricNumberBox(8, 110, 72, 44, "CH", currentChannel, CYD_COLOR_TEXT);
@@ -1320,10 +1320,10 @@ static void cydDrawUi(bool force = false) {
         cydDrawPanel(8, 44, cydScreenW - 16, 54);
         tft.setTextSize(1);
         tft.setTextColor(CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
-        tft.drawString("RF STATUS", 18, 52);
+        tft.drawString("RF STATUS", 18, 50);
         tft.setTextSize(4);
         tft.setTextColor(recentHit ? CYD_COLOR_BLUE : CYD_COLOR_CYAN, CYD_COLOR_SURFACE);
-        tft.drawString(recentHit ? "HIT" : "SCAN", 18, 66);
+        tft.drawString(recentHit ? "HIT" : "SCAN", 18, 62);
 
         int pw = (cydScreenW - 24) / 2;  // ~108
         cydDrawMetricNumberBox(8, 110, pw, 44, "CH", currentChannel, CYD_COLOR_TEXT);
