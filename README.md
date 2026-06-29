@@ -278,12 +278,17 @@ Target OUI list: 33 prefixes — see [`datasets/NitekryDPaul_wifi_ouis.md`](data
 
 - **Flock channel-priority hop:** {11, 6, 1, 10, 5, 2, 9, 4, 3, 8, 7, 12, 13} — hits the three non-overlapping 2.4 GHz channels (1, 6, 11) first, then fills in the rest
 - 750ms dwell per channel — balanced between the Marauder's proven 1s dwell and cycle completion during a drive-by (full cycle: 9.75s)
-- Covers all legal 2.4 GHz channels (1–13)
-- RSSI threshold -100 dBm catches weak/distant camera signals
-- Channels 12–13 added to cover all legal 2.4 GHz channels (14 is restricted in most regions)
+- Covers all legal 2.4 GHz channels (1–13; channel 14 is restricted in most regions)
 - RSSI threshold: -100 dBm (catches weak/distant cameras that would be missed at -95)
-- Optimized WiFi init config disables AMPDU, CSI, and NVS for leaner promiscuous mode operation
-- BLE Flock scanning runs simultaneously with phone BLE UART — no pausing when phone is connected
+- Optimized WiFi init config disables AMPDU, CSI, and NVS for leaner promiscuous mode operation (~48KB RAM freed vs defaults)
+
+### BLE Scanning
+
+- BLE Flock scanning runs simultaneously with phone BLE UART — the ESP32 Bluedroid stack supports both peripheral and central roles at the same time
+- Near-continuous scanning: 15s scan duration / 16s interval (94% duty cycle) — optimized for USB power
+- Active scan with 99% radio duty cycle (`setInterval(100)`, `setWindow(99)`)
+- Detection signatures: Penguin-NNNNNNNNNN names, FS Ext Battery, 10-digit numeric names (with OUI cross-check), XUNTONG manufacturer ID 0x09C8
+- See [docs/marauder-comparison.md](docs/marauder-comparison.md) for the full analysis of what we adopted from the ESP32 Marauder and why
 
 ## Forks and Credits
 

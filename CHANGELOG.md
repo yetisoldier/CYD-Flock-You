@@ -9,16 +9,21 @@ All notable changes to CYD-Flock-You firmware are documented here.
 - Channel hop list expanded to cover all legal 2.4 GHz channels (1–13)
 - BLE advertising now restarts after every scan stop (not just when phone is disconnected), ensuring phone pairing is always available
 - BLE OUI cross-check for 10-digit name pattern — reduces false positives from other IoT devices with numeric names by verifying the BLE MAC's OUI against known Flock prefixes
+- FF badge: removed decorative diagonal line, centered "FF" text in badge
+- Metric box text positioning: nudged labels and values up slightly so text sits higher in boxes instead of on the bottom edge
+- RF STATUS panel: nudged "SCAN"/"HIT" text and "RF STATUS" label up for better vertical balance
 
 ### Changed
 - **Channel hop pattern** changed to Flock channel-priority: `{11,6,1,10,5,2,9,4,3,8,7,12,13}` — hits the three non-overlapping channels (1, 6, 11) first, doubling interception probability on common Flock channels
-- **Channel dwell increased** from 500ms to 750ms — optimal compromise between the Marauder's proven 1s dwell and cycle completion during a drive-by (full cycle: 9.75s)
+- **Channel dwell increased** from 250ms to 750ms — optimal compromise between the Marauder's proven 1s dwell and cycle completion during a drive-by (full cycle: 9.75s)
 - **RSSI threshold lowered** from -95 to -100 dBm — catches weak/distant camera signals
 - **Dedup slots increased** from 8 to 16 — prevents false eviction in dense camera environments
-- WiFi init config replaced with optimized custom config (disables AMPDU, CSI, NVS) modeled after ESP32 Marauder's cfg2 for leaner promiscuous mode
-- BLE scan duration increased from 5s to 10s for longer discovery windows
-- BLE scan interval decreased from 20s to 15s for more frequent scanning
-- BLE scan now sets `setMaxResults(0)` for unlimited results — matches Marauder config
+- **WiFi init config** replaced with optimized custom config (disables AMPDU, CSI, NVS) modeled after ESP32 Marauder's cfg2 for leaner promiscuous mode — frees ~48KB RAM
+- **BLE scan near-continuous:** 15s scan duration, 16s interval (94% duty cycle) — optimized for USB power, no battery conservation needed
+- BLE scan parameters match Marauder: `setInterval(100)`, `setWindow(99)`, `setActiveScan(true)`
+
+### Research
+- Architectural comparison with [ESP32 Marauder CYD fork](https://github.com/Fr4nkFletcher/ESP32-Marauder-Cheap-Yellow-Display) — full analysis in [`docs/marauder-comparison.md`](docs/marauder-comparison.md). Key findings: our callback architecture (IRAM_ATTR + lock-free ring buffer) is superior to the Marauder's for detection reliability; the zero-detection problem was a timing/interception probability issue, not an architecture issue. Five recommendations from the review were implemented in this release.
 
 ## [v1.4.0] — 2026-06-22
 
