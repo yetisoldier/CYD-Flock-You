@@ -1251,10 +1251,17 @@ static void cydDrawUi(bool force = false) {
       tft.setTextSize(3);
       tft.setTextColor(CYD_COLOR_TEXT, CYD_COLOR_DANGER);
       tft.setTextDatum(MC_DATUM);
-      tft.drawString("FLOCK FOUND", cydScreenW / 2, cydScreenH / 2);
+      tft.drawString("FLOCK FOUND", cydScreenW / 2, cydScreenH / 2 - 10);
+      // Show detection source (WiFi / BLE)
+      tft.setTextSize(2);
+      if (cydLastMethod[0]) {
+        const char* srcLabel = "WIFI";
+        if (strstr(cydLastMethod, "ble")) srcLabel = "BLE";
+        tft.drawString(srcLabel, cydScreenW / 2, cydScreenH / 2 + 20);
+      }
       tft.setTextSize(1);
       tft.setTextColor(CYD_COLOR_MUTED, CYD_COLOR_DANGER);
-      tft.drawString("touch to dismiss", cydScreenW / 2, cydScreenH / 2 + 30);
+      tft.drawString("touch to dismiss", cydScreenW / 2, cydScreenH / 2 + 48);
       tft.setTextDatum(TL_DATUM);  // restore default
       return;  // skip normal UI while flash is showing
     } else {
@@ -1596,7 +1603,7 @@ static void cydRecordDetection(const char* mac, const char* oui, const char* met
   cydLastChannel = ch;
   cydLastCount = count;
   cydLastDetectionMs = millis();
-  cydLastLocationValid = cydGpsFresh();
+  cydLastLocationValid = cydGps.hasFix;
   if (cydLastLocationValid) {
     cydLastLat = cydGps.lat;
     cydLastLng = cydGps.lng;
@@ -1966,8 +1973,13 @@ class BleFlockAdvertisedCallbacks : public BLEAdvertisedDeviceCallbacks {
     char oui[9] = "";
     if (strlen(macStr) >= 8) { strncpy(oui, macStr, 8); oui[8] = '\0'; }
 
+#if CYD_BUILD
+    // Record detection for CYD display (triggers red flash screen)
+    cydRecordDetection(macStr, oui, "ble_flock_battery", (int8_t)rssi, 0, hitCount);
+#endif
+
     char bleGpsSuffix[180] = "";
-    if (cydGpsFresh()) {
+    if (cydGps.hasFix) {
       snprintf(bleGpsSuffix, sizeof(bleGpsSuffix),
                ",\"gps\":{\"latitude\":%.6f,\"longitude\":%.6f,\"accuracy\":%.1f,\"age_ms\":%lu,\"source\":\"%s\"}",
                cydGps.lat, cydGps.lng, cydGps.accuracyM,
@@ -2121,7 +2133,7 @@ static void emitDetectionJSON(const char* mac, const char* method,
 
 #if CYD_BUILD
   char gpsSuffix[180] = "";
-  if (cydGpsFresh()) {
+  if (cydGps.hasFix) {
     snprintf(gpsSuffix, sizeof(gpsSuffix),
              ",\"gps\":{\"latitude\":%.6f,\"longitude\":%.6f,\"accuracy\":%.1f,\"age_ms\":%lu,\"source\":\"%s\"}",
              cydGps.lat, cydGps.lng, cydGps.accuracyM,
